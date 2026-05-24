@@ -423,7 +423,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       };
 
       const peerOptions = {
-        debug: 1,
+        debug: 0,
         host: '0.peerjs.com',
         port: 443,
         secure: true,
@@ -454,14 +454,21 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       tryHost.on('error', (err) => {
         if (cancelled) return;
         if (err.type === 'unavailable-id') {
-          // Room exists, join as guest
-          try { tryHost.destroy(); } catch (e) {}
-          const guestPeer = new Peer(peerOptions);
-          setIsHost(false);
-          peerRef.current = guestPeer; // Update reference for cleanup
-          setupPeerHandlers(guestPeer);
+          // Room exists, join as guest safely in next tick to avoid crashing PeerJS internal event loop
+          setTimeout(() => {
+            if (cancelled) return;
+            try { 
+              tryHost.destroy(); 
+            } catch (e) {
+              console.warn("PeerJS tryHost destroy warning:", e);
+            }
+            const guestPeer = new Peer(peerOptions);
+            setIsHost(false);
+            peerRef.current = guestPeer; // Update reference for cleanup
+            setupPeerHandlers(guestPeer);
+          }, 0);
         } else {
-          console.error("PeerJS Error:", err);
+          console.warn("PeerJS Error:", err);
         }
       });
 
@@ -785,27 +792,42 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
               ctx.rect(x + 4, y + 4, cellWidth - 8, cellHeight - 8);
               ctx.clip();
               
-              ctx.fillStyle = '#09090B';
+              ctx.fillStyle = '#09090C';
               ctx.fillRect(x + 4, y + 4, cellWidth - 8, cellHeight - 8);
               
-              const rGlow = Math.min(cellWidth, cellHeight) * 0.4;
-              const grad = ctx.createRadialGradient(x + cellWidth / 2, y + cellHeight / 2, 5, x + cellWidth / 2, y + cellHeight / 2, rGlow);
+              const rGlow = Math.min(cellWidth, cellHeight) * 0.45;
+              const grad = ctx.createRadialGradient(x + cellWidth / 2, y + cellHeight / 2, 2, x + cellWidth / 2, y + cellHeight / 2, rGlow);
               grad.addColorStop(0, 'rgba(16, 185, 129, 0.08)');
+              grad.addColorStop(0.5, 'rgba(13, 148, 136, 0.03)');
               grad.addColorStop(1, 'rgba(16, 185, 129, 0)');
               ctx.fillStyle = grad;
               ctx.fillRect(x + 4, y + 4, cellWidth - 8, cellHeight - 8);
               
-              const avatarSize = Math.max(30, Math.min(64, Math.min(cellWidth, cellHeight) * 0.25));
+              const avatarSize = Math.max(32, Math.min(68, Math.min(cellWidth, cellHeight) * 0.22));
+              const ax = x + cellWidth/2 - avatarSize;
+              const ay = y + cellHeight/2 - avatarSize;
+              const aw = avatarSize * 2;
+              const ah = avatarSize * 2;
+              const ar = avatarSize * 0.55; // Perfect squircle ratio
+              
               ctx.beginPath();
-              ctx.arc(x + cellWidth / 2, y + cellHeight / 2, avatarSize, 0, Math.PI * 2);
-              ctx.fillStyle = '#1D1D22';
-              ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+              if (ctx.roundRect) {
+                ctx.roundRect(ax, ay, aw, ah, ar);
+              } else {
+                ctx.rect(ax, ay, aw, ah);
+              }
+              
+              const avatarGrad = ctx.createLinearGradient(ax, ay, ax, ay + ah);
+              avatarGrad.addColorStop(0, '#1E1E24');
+              avatarGrad.addColorStop(1, '#111114');
+              ctx.fillStyle = avatarGrad;
+              ctx.strokeStyle = 'rgba(255, 255, 255, 0.12)';
               ctx.lineWidth = 1.5;
               ctx.fill();
               ctx.stroke();
               
               ctx.fillStyle = '#10B981';
-              ctx.font = `bold ${Math.max(10, avatarSize * 0.6)}px Inter, system-ui, sans-serif`;
+              ctx.font = `bold ${Math.max(11, avatarSize * 0.55)}px Inter, system-ui, sans-serif`;
               ctx.textAlign = 'center';
               ctx.textBaseline = 'middle';
               
@@ -1105,25 +1127,25 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
                   className={`w-full h-full object-cover ${isVideoOff ? 'hidden' : ''} ${isScreenSharing ? '' : '-scale-x-100'}`} 
                 />
                 {isVideoOff && (
-                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0C0C0F] overflow-hidden">
-                    {/* Cinematic background light */}
-                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.06)_0%,transparent_70%)] animate-pulse" />
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#09090C] overflow-hidden">
+                    {/* Atmospheric luxury ambient glow */}
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.08)_0%,rgba(13,148,136,0.03)_50%,transparent_100%)] z-0 pointer-events-none" />
                     
-                    {/* Rotating lines and rings */}
-                    <div className="absolute w-24 h-24 rounded-full border border-dashed border-emerald-500/10 animate-[spin_25s_linear_infinite]" />
-                    <div className="absolute w-20 h-20 rounded-full border border-emerald-500/20 shadow-[0_0_20px_rgba(16,185,129,0.1)] animate-[spin_10s_linear_infinite_reverse]" />
+                    {/* Subtle outer breathing glow band */}
+                    <div className="absolute w-32 h-32 rounded-full bg-emerald-500/5 ring-1 ring-emerald-500/10 blur-xl animate-pulse z-0" />
                     
-                    {/* Center Avatar initials block */}
-                    <div className="relative w-16 h-16 rounded-full bg-[#141414] border border-white/10 flex items-center justify-center shadow-xl z-10 select-none">
-                      <span className="text-xl font-black bg-clip-text text-transparent bg-gradient-to-br from-emerald-400 to-teal-200 drop-shadow-sm">
-                        {userName ? (userName.substring(0, 2).toUpperCase()) : 'YOU'}
+                    {/* Center glassmorphic squircle avatar casing */}
+                    <div className="relative w-24 h-24 rounded-[32px] bg-gradient-to-b from-[#1E1E24]/85 to-[#121216]/95 border border-white/10 flex items-center justify-center shadow-2xl z-10 select-none hover:scale-105 transition-all duration-500">
+                      <span className="text-3xl font-black bg-clip-text text-transparent bg-gradient-to-br from-emerald-400 via-teal-300 to-emerald-200 drop-shadow-[0_2px_12px_rgba(16,185,129,0.25)] tracking-wide">
+                        {userName ? userName.trim().split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() : 'ME'}
                       </span>
                     </div>
                     
-                    <span className="mt-3 text-[10px] font-semibold uppercase tracking-widest text-[#10B981]/80 flex items-center gap-1 z-10">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-ping" />
-                      Standby Active
-                    </span>
+                    {/* Sleek, human-centered minimal status badge */}
+                    <div className="mt-4 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[10px] font-bold uppercase tracking-widest text-[#10B981] flex items-center gap-2 z-10 shadow-sm animate-pulse">
+                      <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]" />
+                      <span>Camera Paused</span>
+                    </div>
                   </div>
                 )}
                 <div className={`absolute bottom-4 left-4 bg-black/60 backdrop-blur-xl px-3 py-1.5 ${minorSquircle} text-white text-xs font-medium flex items-center border border-white/10 shadow-lg z-10`}>
@@ -1390,25 +1412,25 @@ const PeerVideo = ({
             className="w-full h-full object-cover" 
           />
         ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0C0C0F] overflow-hidden">
-            {/* Cinematic background light */}
-            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(20,184,166,0.06)_0%,transparent_70%)] animate-pulse" />
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#09090C] overflow-hidden">
+            {/* Atmospheric luxury ambient glow */}
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(20,184,166,0.08)_0%,rgba(59,130,246,0.03)_50%,transparent_100%)] z-0 pointer-events-none" />
             
-            {/* Rotating lines and rings */}
-            <div className="absolute w-24 h-24 rounded-full border border-dashed border-teal-500/10 animate-[spin_20s_linear_infinite]" />
-            <div className="absolute w-20 h-20 rounded-full border border-teal-500/20 shadow-[0_0_20px_rgba(20,184,166,0.1)] animate-[spin_8s_linear_infinite_reverse]" />
+            {/* Subtle outer breathing glow band */}
+            <div className="absolute w-32 h-32 rounded-full bg-teal-500/5 ring-1 ring-teal-500/10 blur-xl animate-pulse z-0" />
             
-            {/* Center Avatar initials block */}
-            <div className="relative w-16 h-16 rounded-full bg-[#141414] border border-white/10 flex items-center justify-center shadow-xl z-10 select-none">
-              <span className="text-xl font-black bg-clip-text text-transparent bg-gradient-to-br from-teal-400 to-blue-200 drop-shadow-sm">
-                P{peerID.substring(peerID.length - 2).toUpperCase()}
+            {/* Center glassmorphic squircle avatar casing */}
+            <div className="relative w-24 h-24 rounded-[32px] bg-gradient-to-b from-[#1E1E24]/85 to-[#121216]/95 border border-white/10 flex items-center justify-center shadow-2xl z-10 select-none hover:scale-105 transition-all duration-500">
+              <span className="text-3xl font-black bg-clip-text text-transparent bg-gradient-to-br from-teal-400 via-sky-300 to-blue-200 drop-shadow-[0_2px_12px_rgba(20,184,166,0.25)] tracking-wide">
+                {peerID.includes('pure-meet-room-') ? `H` : `P`}{peerID.substring(peerID.length - 2).toUpperCase()}
               </span>
             </div>
             
-            <span className="mt-3 text-[10px] font-semibold uppercase tracking-widest text-[#10B981]/80 flex items-center gap-1 z-10">
-              <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-ping" />
-              Feed Standby
-            </span>
+            {/* Sleek, human-centered minimal status badge */}
+            <div className="mt-4 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[10px] font-bold uppercase tracking-widest text-slate-400 flex items-center gap-2 z-10 shadow-sm animate-pulse">
+              <span className="w-1.5 h-1.5 rounded-full bg-teal-400 shadow-[0_0_8px_#2dd4bf]" />
+              <span>Camera Paused</span>
+            </div>
           </div>
         )}
 

@@ -95,8 +95,14 @@ export default function InteractivePanel({
       const rect = canvas.getBoundingClientRect();
       const currentWidth = canvas.width;
       const currentHeight = canvas.height;
+      const targetWidth = Math.floor(rect.width);
+      const targetHeight = Math.floor(rect.height);
       
-      if (Math.abs(currentWidth - rect.width) < 2 && Math.abs(currentHeight - rect.height) < 2) {
+      if (targetWidth === 0 || targetHeight === 0) {
+        return; // Wait for active rendering dimensions
+      }
+      
+      if (currentWidth === targetWidth && currentHeight === targetHeight) {
         return; // Avoid unnecessary clears
       }
       
@@ -108,8 +114,8 @@ export default function InteractivePanel({
         tempCtx.drawImage(canvas, 0, 0);
       }
       
-      canvas.width = rect.width;
-      canvas.height = rect.height;
+      canvas.width = targetWidth;
+      canvas.height = targetHeight;
       
       const ctx = canvas.getContext('2d');
       if (ctx) {
@@ -117,13 +123,18 @@ export default function InteractivePanel({
         ctx.lineJoin = 'round';
         ctx.lineWidth = 3;
         if (currentWidth > 0 && currentHeight > 0) {
-          ctx.drawImage(tempCanvas, 0, 0, currentWidth, currentHeight, 0, 0, rect.width, rect.height);
+          ctx.drawImage(tempCanvas, 0, 0, currentWidth, currentHeight, 0, 0, targetWidth, targetHeight);
         }
       }
     };
     
     resizeCanvas();
-    window.addEventListener('resize', resizeCanvas);
+    
+    // Use ResizeObserver for precise dynamic scaling across tabs, animations, and layouts
+    const observer = new ResizeObserver(() => {
+      resizeCanvas();
+    });
+    observer.observe(canvas);
 
     // Direct DOM event touch handles to override browser-level standard gestures and scrolling (passive: false)
     const handleTouchStart = (e: TouchEvent) => {
@@ -132,8 +143,8 @@ export default function InteractivePanel({
       if (!e.touches || e.touches.length === 0) return;
       const clientX = e.touches[0].clientX;
       const clientY = e.touches[0].clientY;
-      const x = clientX - rect.left;
-      const y = clientY - rect.top;
+      const x = rect.width > 0 ? ((clientX - rect.left) / rect.width) * canvas.width : (clientX - rect.left);
+      const y = rect.height > 0 ? ((clientY - rect.top) / rect.height) * canvas.height : (clientY - rect.top);
       
       lastPos.current = { x, y };
       isDrawingRef.current = true;
@@ -150,8 +161,8 @@ export default function InteractivePanel({
       if (!e.touches || e.touches.length === 0) return;
       const clientX = e.touches[0].clientX;
       const clientY = e.touches[0].clientY;
-      const x = clientX - rect.left;
-      const y = clientY - rect.top;
+      const x = rect.width > 0 ? ((clientX - rect.left) / rect.width) * canvas.width : (clientX - rect.left);
+      const y = rect.height > 0 ? ((clientY - rect.top) / rect.height) * canvas.height : (clientY - rect.top);
       
       const currentColor = drawColorRef.current;
       ctx.strokeStyle = currentColor;
@@ -160,11 +171,18 @@ export default function InteractivePanel({
       ctx.lineTo(x, y);
       ctx.stroke();
       
+      const width = canvas.width;
+      const height = canvas.height;
+      
       broadcastData('canvas_draw', {
         x,
         y,
         lastX: lastPos.current.x,
         lastY: lastPos.current.y,
+        rx: width > 0 ? x / width : 0,
+        ry: height > 0 ? y / height : 0,
+        rlastX: width > 0 ? lastPos.current.x / width : 0,
+        rlastY: width > 0 ? lastPos.current.y / height : 0,
         color: currentColor
       });
       
@@ -182,7 +200,7 @@ export default function InteractivePanel({
     canvas.addEventListener('touchcancel', handleTouchEnd, { passive: false });
 
     return () => {
-      window.removeEventListener('resize', resizeCanvas);
+      observer.disconnect();
       canvas.removeEventListener('touchstart', handleTouchStart);
       canvas.removeEventListener('touchmove', handleTouchMove);
       canvas.removeEventListener('touchend', handleTouchEnd);
@@ -195,8 +213,8 @@ export default function InteractivePanel({
     if (!canvasRef.current) return;
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = rect.width > 0 ? ((e.clientX - rect.left) / rect.width) * canvas.width : (e.clientX - rect.left);
+    const y = rect.height > 0 ? ((e.clientY - rect.top) / rect.height) * canvas.height : (e.clientY - rect.top);
     
     lastPos.current = { x, y };
     isDrawingRef.current = true;
@@ -210,8 +228,8 @@ export default function InteractivePanel({
     if (!ctx) return;
     
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
+    const x = rect.width > 0 ? ((e.clientX - rect.left) / rect.width) * canvas.width : (e.clientX - rect.left);
+    const y = rect.height > 0 ? ((e.clientY - rect.top) / rect.height) * canvas.height : (e.clientY - rect.top);
     
     ctx.strokeStyle = drawColor;
     ctx.beginPath();
@@ -219,12 +237,19 @@ export default function InteractivePanel({
     ctx.lineTo(x, y);
     ctx.stroke();
     
-    // Broadcast draw event to peers
+    const width = canvas.width;
+    const height = canvas.height;
+    
+    // Broadcast draw event to peers with both absolute and normalized coordinates
     broadcastData('canvas_draw', {
       x,
       y,
       lastX: lastPos.current.x,
       lastY: lastPos.current.y,
+      rx: width > 0 ? x / width : 0,
+      ry: height > 0 ? y / height : 0,
+      rlastX: width > 0 ? lastPos.current.x / width : 0,
+      rlastY: width > 0 ? lastPos.current.y / height : 0,
       color: drawColor
     });
     
@@ -237,16 +262,35 @@ export default function InteractivePanel({
   };
 
   // Draw other peer's lines onto canvas
-  const drawExternalSegment = (data: { x: number; y: number; lastX: number; lastY: number; color: string }) => {
+  const drawExternalSegment = (data: { 
+    x: number; 
+    y: number; 
+    lastX: number; 
+    lastY: number; 
+    rx?: number; 
+    ry?: number; 
+    rlastX?: number; 
+    rlastY?: number; 
+    color: string 
+  }) => {
     if (!canvasRef.current) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     
+    const width = canvas.width;
+    const height = canvas.height;
+    
+    // Fall back to absolute pixels if multi-size relatives are missing
+    const lastX = data.rlastX !== undefined ? data.rlastX * width : data.lastX;
+    const lastY = data.rlastY !== undefined ? data.rlastY * height : data.lastY;
+    const x = data.rx !== undefined ? data.rx * width : data.x;
+    const y = data.ry !== undefined ? data.ry * height : data.y;
+    
     ctx.strokeStyle = data.color;
     ctx.beginPath();
-    ctx.moveTo(data.lastX, data.lastY);
-    ctx.lineTo(data.x, data.y);
+    ctx.moveTo(lastX, lastY);
+    ctx.lineTo(x, y);
     ctx.stroke();
   };
 

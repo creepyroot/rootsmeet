@@ -28,6 +28,7 @@ export default function JoinScreen({ onJoin, onCreate, forcedRoomId }: JoinScree
   };
 
   const squircle = "rounded-[24px]";
+  const minorSquircle = "rounded-[20px]";
 
   return (
     <div className="h-full w-full bg-[#0A0A0A] font-sans flex text-slate-200 overflow-y-auto selection:bg-emerald-500/30 selection:text-emerald-200">
@@ -37,7 +38,7 @@ export default function JoinScreen({ onJoin, onCreate, forcedRoomId }: JoinScree
         <div className="w-full lg:w-1/2 p-8 md:p-16 flex flex-col justify-center relative">
           
           <div className="absolute top-8 left-8 md:top-12 md:left-16 flex items-center gap-3">
-             <div className="w-10 h-10 bg-emerald-500 rounded-xl flex items-center justify-center shadow-[0_0_24px_rgba(16,185,129,0.4)]">
+             <div className="w-10 h-10 bg-emerald-500 rounded-[14px] flex items-center justify-center shadow-[0_0_24px_rgba(16,185,129,0.4)]">
                <Video className="w-5 h-5 text-[#0A0A0A]" />
              </div>
              <span className="text-xl font-bold tracking-tight text-white">ROOTS<span className="text-emerald-400">MEET</span></span>
@@ -73,7 +74,7 @@ export default function JoinScreen({ onJoin, onCreate, forcedRoomId }: JoinScree
                   initial={{ opacity: 0, y: 20 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.3 + (i * 0.1) }}
                   key={i} className="flex flex-col gap-2 p-1"
                 >
-                  <div className="w-12 h-12 rounded-2xl bg-[#1A1A1A] border border-white/5 flex items-center justify-center mb-2 shadow-inner">
+                  <div className={`w-12 h-12 ${minorSquircle} bg-[#1A1A1A] border border-white/5 flex items-center justify-center mb-2 shadow-inner`}>
                     <ft.icon className="w-6 h-6 text-emerald-400" />
                   </div>
                   <h3 className="text-white font-semibold">{ft.title}</h3>
@@ -110,7 +111,7 @@ export default function JoinScreen({ onJoin, onCreate, forcedRoomId }: JoinScree
                       placeholder="Jane Doe" 
                       value={userName}
                       onChange={(e) => setUserName(e.target.value)}
-                      className={`w-full pl-12 pr-4 py-4 bg-[#1A1A1A] border border-white/10 rounded-2xl focus:outline-none focus:border-emerald-500/50 focus:bg-[#222222] transition-all text-white placeholder:text-slate-600 font-medium text-lg`}
+                      className={`w-full pl-12 pr-4 py-4 bg-[#1A1A1A] border border-white/10 ${minorSquircle} focus:outline-none focus:border-emerald-500/50 focus:bg-[#222222] transition-all text-white placeholder:text-slate-600 font-medium text-lg`}
                       autoFocus
                     />
                   </div>
@@ -121,7 +122,7 @@ export default function JoinScreen({ onJoin, onCreate, forcedRoomId }: JoinScree
                     type="button"
                     onClick={handleCreate}
                     disabled={!userName.trim()}
-                    className="w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-[#0A0A0A] font-bold text-lg rounded-2xl transition-all shadow-[0_0_40px_rgba(16,185,129,0.3)] hover:shadow-[0_0_60px_rgba(16,185,129,0.5)] active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none disabled:shadow-none"
+                    className={`w-full py-4 bg-emerald-500 hover:bg-emerald-400 text-[#0A0A0A] font-bold text-lg ${minorSquircle} transition-all shadow-[0_0_40px_rgba(16,185,129,0.3)] hover:shadow-[0_0_60px_rgba(16,185,129,0.5)] active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none disabled:shadow-none`}
                   >
                     Create New Room
                   </button>
@@ -148,7 +149,7 @@ export default function JoinScreen({ onJoin, onCreate, forcedRoomId }: JoinScree
                            placeholder="Enter 10-digit code" 
                            value={roomId}
                            onChange={(e) => setRoomId(e.target.value)}
-                           className={`w-full pl-12 pr-4 py-4 bg-[#1A1A1A] border border-white/10 rounded-2xl focus:outline-none focus:border-emerald-500/50 focus:bg-[#222222] transition-all text-white placeholder:text-slate-600 font-medium text-lg tracking-wide`}
+                           className={`w-full pl-12 pr-4 py-4 bg-[#1A1A1A] border border-white/10 ${minorSquircle} focus:outline-none focus:border-emerald-500/50 focus:bg-[#222222] transition-all text-white placeholder:text-slate-600 font-medium text-lg tracking-wide`}
                          />
                        </div>
                      </div>
@@ -158,7 +159,7 @@ export default function JoinScreen({ onJoin, onCreate, forcedRoomId }: JoinScree
                     type={forcedRoomId ? "submit" : "button"}
                     onClick={!forcedRoomId ? handleJoin : undefined}
                     disabled={!roomId.trim() || !userName.trim()}
-                    className={`w-full py-4 text-lg font-bold rounded-2xl transition-all flex items-center justify-center gap-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none ${
+                    className={`w-full py-4 text-lg font-bold ${minorSquircle} transition-all flex items-center justify-center gap-2 active:scale-[0.98] disabled:opacity-50 disabled:pointer-events-none ${
                         forcedRoomId 
                           ? 'bg-emerald-500 text-[#0A0A0A] hover:bg-emerald-400 shadow-[0_0_40px_rgba(16,185,129,0.3)]' 
                           : 'bg-[#1A1A1A] border border-white/10 text-white hover:bg-[#222] hover:border-white/20'

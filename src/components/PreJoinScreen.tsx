@@ -239,39 +239,35 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }: Pr
               className="w-full h-full object-cover -scale-x-100" 
             />
           ) : (
-            <div className="relative flex flex-col items-center justify-center w-full h-full overflow-hidden">
-              {/* Cinematic scanning lines and rotating rings */}
-              <div className="absolute inset-0 bg-gradient-to-t from-emerald-500/5 via-transparent to-transparent z-0 pointer-events-none" />
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.08)_0%,transparent_70%)] z-0 pointer-events-none animate-pulse" />
+            <div className="relative flex flex-col items-center justify-center w-full h-full overflow-hidden bg-[#09090C]">
+              {/* Atmospheric luxury ambient glow */}
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.08)_0%,rgba(13,148,136,0.03)_50%,transparent_100%)] z-0 pointer-events-none" />
               
-              {/* Outer dashed spinning loop */}
-              <div className="absolute w-32 h-32 rounded-full border border-dashed border-emerald-500/10 animate-[spin_30s_linear_infinite]" />
+              {/* Subtle outer breathing glow band */}
+              <div className="absolute w-32 h-32 rounded-full bg-emerald-500/5 ring-1 ring-emerald-500/10 blur-xl animate-pulse z-0" />
               
-              {/* Inner continuous spin ring */}
-              <div className="absolute w-28 h-28 rounded-full border border-emerald-500/20 shadow-[0_0_30px_rgba(16,185,129,0.15)] animate-[spin_12s_linear_infinite]" />
-              
-              {/* The glowing avatar button container */}
-              <div className="relative w-20 h-20 rounded-full bg-[#141414] border border-white/10 flex items-center justify-center shadow-2xl z-10 select-none">
-                <span className="text-3xl font-black bg-clip-text text-transparent bg-gradient-to-br from-emerald-400 to-teal-200 drop-shadow-[0_2px_8px_rgba(16,185,129,0.4)] tracking-wide">
-                  {getInitials(userName)}
+              {/* Center glassmorphic squircle avatar casing */}
+              <div className="relative w-24 h-24 rounded-[32px] bg-gradient-to-b from-[#1E1E24]/85 to-[#121216]/95 border border-white/10 flex items-center justify-center shadow-2xl z-10 select-none hover:scale-105 transition-all duration-500">
+                <span className="text-3xl font-black bg-clip-text text-transparent bg-gradient-to-br from-emerald-400 via-teal-300 to-emerald-200 drop-shadow-[0_2px_12px_rgba(16,185,129,0.25)] tracking-wide">
+                  {getInitials(userName) || 'ME'}
                 </span>
                 
                 {/* Active radar blip */}
                 {micEnabled && (
-                  <span className="absolute bottom-1 right-1 flex h-3.5 w-3.5">
+                  <span className="absolute bottom-2 right-2 flex h-3.5 w-3.5">
                     <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                     <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500"></span>
                   </span>
                 )}
               </div>
               
-              {/* Sub-label */}
-              <p className="mt-4 text-xs font-semibold uppercase tracking-widest text-[#10B981] drop-shadow-[0_0_10px_rgba(16,185,129,0.3)] flex items-center gap-1.5 z-10">
-                <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-ping" />
-                {error ? "Standby Mode" : "Camera Paused"}
+              {/* Sleek, human-centered minimal status badge */}
+              <p className="mt-4 px-3 py-1 rounded-full bg-white/5 border border-white/10 text-[10px] font-bold uppercase tracking-widest text-slate-400 flex items-center gap-2 z-10 shadow-sm animate-pulse">
+                <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]" />
+                <span>{error ? "Standby Mode" : "Camera Paused"}</span>
               </p>
               {error && (
-                <p className="mt-1 text-[10px] text-slate-500 max-w-[80%] text-center uppercase tracking-widest leading-relaxed z-10 truncate px-2">
+                <p className="mt-2 text-[10px] text-slate-500 max-w-[80%] text-center uppercase tracking-widest leading-relaxed z-10 px-2 truncate">
                   Mic & video restricted or unavailable
                 </p>
               )}
@@ -297,7 +293,7 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }: Pr
         <div className="w-full md:w-2/5 flex flex-col gap-6">
           <div>
             <h1 className="text-4xl font-bold text-white mb-2 tracking-tight">Ready to join?</h1>
-            <p className="text-sm text-slate-400 font-medium">Meeting: <span className="font-mono text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded-md ml-1">{roomId}</span></p>
+            <p className="text-sm text-slate-400 font-medium">Meeting: <span className="font-mono text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded-[10px] ml-1">{roomId}</span></p>
           </div>
 
           <div className={`bg-[#1A1A1A] p-5 ${minorSquircle} border border-white/5`}>
@@ -308,8 +304,8 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }: Pr
             </p>
           </div>
           
-          <div className="flex items-center gap-3 text-teal-300 text-sm font-medium bg-teal-500/10 p-4 rounded-xl border border-teal-500/20 shadow-inner">
-            <Sparkles className="w-5 h-5 text-teal-400 rounded-full bg-teal-500/20 p-1" /> Ultra-Fast P2P Connection
+          <div className={`flex items-center gap-3 text-teal-300 text-sm font-medium bg-teal-500/10 p-4 ${minorSquircle} border border-teal-500/20 shadow-inner`}>
+            <Sparkles className="w-5 h-5 text-teal-400 rounded-lg bg-teal-500/20 p-1" /> Ultra-Fast P2P Connection
           </div>
 
           <div className="flex flex-col gap-3 mt-4">
