@@ -247,10 +247,23 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   }, [setupDataConnection]);
 
   useEffect(() => {
+    if (userVideo.current && localStream) {
+      userVideo.current.srcObject = localStream;
+      userVideo.current.play().catch(err => {
+        console.warn("Local video play failed on mount/update:", err);
+      });
+    }
+  }, [localStream, isReady]);
+
+  useEffect(() => {
     let currentPeer: Peer | null = null;
     let cancelled = false;
 
     const initMediaAndPeer = async () => {
+      // Settle hardware/browser resource releases from PreJoinScreen
+      await new Promise(resolve => setTimeout(resolve, 500));
+      if (cancelled) return;
+
       let stream: MediaStream | null = null;
       
       const getMediaStream = async (): Promise<MediaStream> => {
@@ -441,6 +454,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         if (cancelled) return;
         if (err.type === 'unavailable-id') {
           // Room exists, join as guest
+          try { tryHost.destroy(); } catch (e) {}
           const guestPeer = new Peer(peerOptions);
           setIsHost(false);
           peerRef.current = guestPeer; // Update reference for cleanup
@@ -637,32 +651,200 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       return;
     }
     try {
-      let streamToRecord: MediaStream;
-      try {
-        streamToRecord = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true } as any);
-      } catch (e) {
-        streamToRecord = await navigator.mediaDevices.getDisplayMedia({ video: true } as any);
+      // 1. Set up audio context mixing for ALL participant audio streams
+      let audioCtx: AudioContext | null = null;
+      let dest: MediaStreamAudioDestinationNode | null = null;
+      const AudioCtxClass = (window as any).AudioContext || (window as any).webkitAudioContext;
+      
+      if (AudioCtxClass) {
+        try {
+          audioCtx = new AudioCtxClass();
+          dest = audioCtx.createMediaStreamDestination();
+          
+          let hasAudio = false;
+          // Connect local mic
+          if (localStream && localStream.getAudioTracks().length > 0) {
+            const localSource = audioCtx.createMediaStreamSource(localStream);
+            localSource.connect(dest);
+            hasAudio = true;
+          }
+          
+          // Connect remote peer streams
+          peers.forEach(peer => {
+            if (peer.stream && peer.stream.getAudioTracks().length > 0) {
+              try {
+                const peerSource = audioCtx.createMediaStreamSource(peer.stream);
+                peerSource.connect(dest);
+                hasAudio = true;
+              } catch (e) {
+                console.warn("Could not splice remote audio node to recording:", e);
+              }
+            }
+          });
+        } catch (audioMixErr) {
+          console.warn("WebAudio context mix failed:", audioMixErr);
+        }
       }
-      const recorder = new MediaRecorder(streamToRecord);
+
+      // 2. Set up Canvas Compositor to record the active meeting grid layout
+      const canvas = document.createElement('canvas');
+      canvas.width = 1280;
+      canvas.height = 720;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error("Could not create canvas 2d context for compositor.");
+
+      let compositorActive = true;
+      
+      const drawCompositorFrame = () => {
+        if (!compositorActive) return;
+        
+        // Dark metallic background matching user interface
+        ctx.fillStyle = '#0F0F12';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Query elements from domestic DOM dynamically (independent of complex refs)
+        const videos = Array.from(document.querySelectorAll('main video')) as HTMLVideoElement[];
+        const count = videos.length;
+        
+        if (count > 0) {
+          let cols = 1;
+          let rows = 1;
+          
+          if (count > 4) {
+             cols = 3;
+             rows = Math.ceil(count / 3);
+          } else if (count > 2) {
+             cols = 2;
+             rows = 2;
+          } else if (count > 1) {
+             cols = 2;
+             rows = 1;
+          }
+          
+          const cellWidth = canvas.width / cols;
+          const cellHeight = canvas.height / rows;
+          
+          videos.forEach((video, index) => {
+            const col = index % cols;
+            const row = Math.floor(index / cols);
+            const x = col * cellWidth;
+            const y = row * cellHeight;
+            
+            try {
+              // Letterbox/Cover calculations
+              const vWidth = video.videoWidth || 640;
+              const vHeight = video.videoHeight || 480;
+              const vRatio = vWidth / vHeight;
+              const cellRatio = cellWidth / cellHeight;
+              
+              let drawW = cellWidth;
+              let drawH = cellHeight;
+              let drawX = x;
+              let drawY = y;
+              
+              if (cellRatio > vRatio) {
+                drawW = cellHeight * vRatio;
+                drawX = x + (cellWidth - drawW) / 2;
+              } else {
+                drawH = cellWidth / vRatio;
+                drawY = y + (cellHeight - drawH) / 2;
+              }
+              
+              // Draw video frame
+              ctx.drawImage(video, drawX, drawY, drawW, drawH);
+              
+              // Subtle name tag banner matching pure-meet styling
+              ctx.fillStyle = 'rgba(15, 15, 20, 0.75)';
+              ctx.beginPath();
+              // Rounded rectangle for banner
+              const bx = x + 15;
+              const by = y + cellHeight - 40;
+              const bw = 180;
+              const bh = 26;
+              const br = 6;
+              
+              if (ctx.roundRect) {
+                ctx.roundRect(bx, by, bw, bh, br);
+              } else {
+                ctx.rect(bx, by, bw, bh);
+              }
+              ctx.fill();
+              
+              ctx.fillStyle = '#FFFFFF';
+              ctx.font = 'bold 12px Inter, system-ui, sans-serif';
+              const isLocalVideo = video === userVideo.current;
+              const label = isLocalVideo ? `${userName} (You)` : `Participant ${index}`;
+              ctx.fillText(label, bx + 12, by + 17);
+            } catch (err) {
+              // Fallback placeholder with standard avatar
+              ctx.fillStyle = '#1A1A1F';
+              ctx.fillRect(x + 5, y + 5, cellWidth - 10, cellHeight - 10);
+            }
+          });
+        } else {
+          ctx.fillStyle = '#FFFFFF';
+          ctx.font = '20px sans-serif';
+          ctx.fillText("Waiting for video streams to connect...", canvas.width / 2 - 150, canvas.height / 2);
+        }
+        
+        requestAnimationFrame(drawCompositorFrame);
+      };
+      
+      requestAnimationFrame(drawCompositorFrame);
+
+      // Capture canvas as video track
+      const canvasStream = canvas.captureStream(30);
+      const combinedStream = new MediaStream();
+      
+      // Inject compositor video tracks
+      canvasStream.getVideoTracks().forEach(t => combinedStream.addTrack(t));
+      
+      // Inject mixed audio tracks
+      if (dest && dest.stream.getAudioTracks().length > 0) {
+        dest.stream.getAudioTracks().forEach(t => combinedStream.addTrack(t));
+      } else if (localStream && localStream.getAudioTracks().length > 0) {
+        localStream.getAudioTracks().forEach(t => combinedStream.addTrack(t));
+      }
+
+      if (combinedStream.getTracks().length === 0) {
+        throw new Error("Could not compound any visual tracks to record.");
+      }
+
+      // Standard portable mimetype support for WebM video in modern browsers
+      let recorderOptions: MediaRecorderOptions = { mimeType: 'video/webm' };
+      if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')) {
+        recorderOptions = { mimeType: 'video/webm;codecs=vp8,opus' };
+      }
+
+      const recorder = new MediaRecorder(combinedStream, recorderOptions);
       const chunks: Blob[] = [];
+      
       recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+      
+      const currentAudioCtx = audioCtx;
       recorder.onstop = () => {
+        compositorActive = false;
+        
+        // Stop all track nodes of canvas recording stream to free hardware completely
+        canvasStream.getTracks().forEach(t => t.stop());
+        combinedStream.getTracks().forEach(t => t.stop());
+        
+        if (currentAudioCtx && currentAudioCtx.state !== 'closed') {
+          currentAudioCtx.close().catch(e => console.warn("Error releasing AudioContext sandbox:", e));
+        }
+
         const url = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' }));
         const a = document.createElement('a');
         a.href = url;
         a.download = `Meeting_Recording_${new Date().getTime()}.webm`;
         a.click();
-        streamToRecord.getTracks().forEach(t => t.stop());
       };
+      
       recorder.start(1000);
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
     } catch (err: any) {
-      if (err.name === 'NotAllowedError' || err.message?.includes('current context')) {
-        alert('Screen recording is blocked in this preview window.\n\nPlease open the application in a new tab (using the ↗ icon at the top right) to use Screen Recording.');
-      } else {
-        alert(`Failed to start recording: ${err.message}`);
-      }
+      alert(`Failed to start recording: ${err.message || err}`);
     }
   };
 
@@ -1035,13 +1217,13 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
                   initial={{ opacity: 0, y: 15, scale: 0.9, x: "-50%" }}
                   animate={{ opacity: 1, y: 0, scale: 1, x: "-50%" }}
                   exit={{ opacity: 0, y: 15, scale: 0.9, x: "-50%" }}
-                  className={`absolute bottom-[64px] left-1/2 bg-[#1E1E1E]/95 backdrop-blur-3xl border border-white/10 ${squircle} p-2.5 flex gap-2 shadow-2xl z-50 pointer-events-auto`}
+                  className={`absolute bottom-[52px] sm:bottom-[64px] left-1/2 bg-[#1E1E1E]/95 backdrop-blur-3xl border border-white/10 ${squircle} p-2 flex gap-1.5 shadow-2xl z-50 pointer-events-auto`}
                 >
                   {['👍', '❤️', '😂', '🎉', '👋', '👀'].map(emoji => (
                     <button
                       key={emoji}
                       onClick={() => sendReaction(emoji)}
-                      className={`w-11 h-11 sm:w-13 sm:h-13 flex items-center justify-center text-xl sm:text-2xl hover:bg-slate-800/80 ${minorSquircle} transition-all hover:scale-110 active:scale-95 text-white`}
+                      className={`w-10 h-10 sm:w-12 sm:h-12 flex items-center justify-center text-lg sm:text-xl hover:bg-slate-800/80 ${minorSquircle} transition-all hover:scale-110 active:scale-95 text-white`}
                     >
                       {emoji}
                     </button>
