@@ -477,6 +477,11 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   const sendReaction = (emoji: string) => {
     broadcastData('reaction', { emoji });
     setShowEmojiPicker(false);
+    if (peerRef.current) {
+        const reactionId = Math.random().toString();
+        setReactions(prev => [...prev, { id: reactionId, userId: peerRef.current!.id, emoji }]);
+        setTimeout(() => setReactions(prev => prev.filter(r => r.id !== reactionId)), 3000);
+    }
   };
 
   const sendChatMessage = (e: React.FormEvent) => {
@@ -643,7 +648,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       </header>
 
       <div className="flex-1 flex overflow-hidden relative">
-        <main className={`flex-1 p-3 md:p-6 flex items-center justify-center overflow-hidden transition-all duration-500 ease-in-out ${showChat ? 'md:pr-[40vw] lg:pr-[30vw]' : ''}`}>
+        <main className={`flex-1 p-3 md:p-6 flex items-center justify-center overflow-hidden transition-all duration-500 ease-in-out`}>
           <div 
             className={`w-full max-w-[1600px] h-full grid gap-3 md:gap-4 auto-rows-fr transition-all duration-500 relative`}
             style={gridTemplate}
@@ -705,6 +710,19 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
                 peerID={peer.id} 
                 isHandRaised={raisedHands.has(peer.id)}
                 peerReactions={reactions.filter(r => r.userId === peer.id)}
+                isHostPOV={isHost}
+                onKick={() => {
+                  if (window.confirm("Kick this user from the meeting?")) {
+                    // Because we are host, we can close their data and media connections to kick them
+                    const dc = dataConnections.current.get(peer.id);
+                    const mc = mediaConnections.current.get(peer.id);
+                    if (dc) dc.close();
+                    if (mc) mc.close();
+                    dataConnections.current.delete(peer.id);
+                    mediaConnections.current.delete(peer.id);
+                    setPeers(prev => prev.filter(p => p.id !== peer.id));
+                  }
+                }}
               />
             ))}
           </div>
@@ -716,7 +734,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: 20 }}
-              className={`absolute bottom-24 left-6 right-6 md:left-[10%] md:right-[10%] pointer-events-none z-10 flex flex-col items-center gap-2 ${showChat ? 'md:right-[calc(40vw+10%)] lg:right-[calc(30vw+10%)]' : ''}`}
+              className={`absolute bottom-24 left-6 right-6 md:left-[10%] md:right-[10%] pointer-events-none z-10 flex flex-col items-center gap-2`}
             >
               {transcriptions.map(t => (
                 <div key={t.id} className={`bg-black/70 backdrop-blur-md px-4 py-2 ${minorSquircle} text-white max-w-full text-center shadow-lg border border-white/10`}>
@@ -731,65 +749,70 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         <AnimatePresence>
           {showChat && (
              <motion.aside 
-              initial={{ x: '100%', opacity: 0 }}
-              animate={{ x: 0, opacity: 1 }}
-              exit={{ x: '100%', opacity: 0 }}
-              transition={{ type: 'spring', damping: 30, stiffness: 200 }}
-              className={`absolute right-0 top-0 bottom-[88px] w-full md:w-[40vw] lg:w-[30vw] bg-[#171717] border-l border-white/5 flex flex-col z-30 shadow-[−20px_0_40px_rgba(0,0,0,0.3)] rounded-tl-[32px] overflow-hidden`}
+              initial={{ y: -100, opacity: 0, scale: 0.8, filter: "blur(10px)" }}
+              animate={{ y: 0, opacity: 1, scale: 1, filter: "blur(0px)" }}
+              exit={{ y: -50, opacity: 0, scale: 0.8, filter: "blur(10px)" }}
+              transition={{ type: 'spring', damping: 25, stiffness: 300 }}
+              className={`absolute top-4 left-1/2 -translate-x-1/2 w-[90%] max-w-3xl h-[75vh] max-h-[800px] bg-[#0A0A0A]/95 backdrop-blur-3xl border border-white/10 flex flex-col z-[100] shadow-[0_40px_100px_rgba(0,0,0,0.8)] rounded-[32px] overflow-hidden`}
             >
-              <div className="h-14 border-b border-white/5 flex items-center justify-between px-5 shrink-0 bg-[#1A1A1A] rounded-tl-[32px]">
-                <h3 className="text-white font-medium text-sm flex items-center gap-2 tracking-wide">
-                  <MessageSquare className="w-4 h-4 text-emerald-400" /> Room Chat
+              <div className="h-16 border-b border-white/5 flex items-center justify-between px-6 shrink-0 bg-[#141414]/80">
+                <h3 className="text-white font-bold text-lg flex items-center gap-3 tracking-tight">
+                  <MessageSquare className="w-5 h-5 text-emerald-400" /> Room Chat
                 </h3>
-                <button onClick={() => setShowChat(false)} className={`p-1.5 ${minorSquircle} text-slate-400 hover:bg-slate-800 hover:text-white transition-colors`}>
-                  <X className="w-4 h-4" />
+                <button onClick={() => setShowChat(false)} className={`p-2 rounded-[16px] text-slate-400 hover:bg-white/10 hover:text-white transition-all active:scale-95`}>
+                  <X className="w-5 h-5" />
                 </button>
               </div>
               
-              <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4 scroll-smooth overflow-x-hidden">
+              <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4 scroll-smooth overflow-x-hidden">
                 {messages.length === 0 ? (
-                  <div className="flex-1 flex flex-col items-center justify-center text-slate-500 space-y-3">
-                    <div className={`w-12 h-12 ${minorSquircle} bg-slate-800/50 flex items-center justify-center`}>
-                      <MessageSquare className="w-6 h-6 opacity-40" />
+                  <div className="flex-1 flex flex-col items-center justify-center text-slate-500 space-y-4">
+                    <div className={`w-16 h-16 rounded-[24px] bg-white/5 flex items-center justify-center`}>
+                      <MessageSquare className="w-8 h-8 opacity-40 text-emerald-400" />
                     </div>
-                    <p className="text-sm font-medium">No messages yet.</p>
+                    <p className="text-base font-medium">No messages yet.</p>
                   </div>
                 ) : (
                   messages.map((msg) => (
-                    <div key={msg.id} className={`flex flex-col ${msg.isSelf ? 'items-end' : 'items-start'}`}>
+                    <motion.div 
+                      key={msg.id} 
+                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      className={`flex flex-col ${msg.isSelf ? 'items-end' : 'items-start'}`}
+                    >
                       <div className="flex items-center gap-2 mb-1.5 px-1">
-                        <span className={`text-[10px] font-semibold ${msg.isSelf ? 'text-emerald-400' : 'text-slate-400'}`}>
+                        <span className={`text-[11px] font-bold tracking-wide uppercase ${msg.isSelf ? 'text-emerald-400' : 'text-slate-400'}`}>
                           {msg.isSelf ? 'You' : msg.senderName || 'Peer'}
                         </span>
-                        <span className="text-[9px] text-slate-600 font-medium">{formatTime(msg.timestamp)}</span>
+                        <span className="text-[10px] text-slate-500 font-medium">{formatTime(msg.timestamp)}</span>
                       </div>
-                      <div className={`px-4 py-2.5 ${minorSquircle} text-sm max-w-[85%] shadow-sm ${
+                      <div className={`px-5 py-3 rounded-[24px] text-base max-w-[85%] shadow-md ${
                         msg.isSelf 
-                          ? 'bg-emerald-600 text-white rounded-tr-sm' 
-                          : 'bg-[#222222] text-slate-200 rounded-tl-sm border border-white/5'
-                      } break-words`}>
+                          ? 'bg-emerald-500 text-[#0A0A0A] rounded-tr-sm font-medium' 
+                          : 'bg-[#1A1A1A] text-slate-200 rounded-tl-sm border border-white/5'
+                      } break-words leading-relaxed`}>
                         {msg.isFile && msg.fileData ? (
-                          <div className="flex flex-col gap-2 min-w-[200px]">
-                            <div className={`flex items-center gap-2 bg-black/20 p-2 ${minorSquircle}`}>
-                              <FileUp className={`w-8 h-8 text-white/70 p-1.5 bg-black/20 ${minorSquircle}`} />
+                          <div className="flex flex-col gap-3 min-w-[240px]">
+                            <div className={`flex items-center gap-3 bg-black/20 p-3 rounded-[16px]`}>
+                              <FileUp className={`w-10 h-10 text-white/70 p-2 bg-black/20 rounded-[12px]`} />
                               <div className="flex-1 min-w-0">
-                                <p className="text-xs font-medium truncate">{msg.fileData.name}</p>
-                                <p className="text-[10px] opacity-70">
+                                <p className="text-sm font-semibold truncate">{msg.fileData.name}</p>
+                                <p className="text-xs opacity-70 font-medium mt-0.5">
                                   {msg.fileData.progress === 100 ? 'Complete' : `${msg.fileData.progress}%`}
                                 </p>
                               </div>
                             </div>
                             {msg.fileData.progress < 100 ? (
-                              <div className={`w-full bg-black/30 ${minorSquircle} h-1.5 overflow-hidden`}>
-                                <div className="bg-white h-full transition-all duration-300" style={{ width: `${msg.fileData.progress}%` }}></div>
+                              <div className={`w-full bg-black/30 rounded-full h-2 overflow-hidden`}>
+                                <div className="bg-white h-full transition-all duration-300 rounded-full" style={{ width: `${msg.fileData.progress}%` }}></div>
                               </div>
                             ) : msg.fileData.url ? (
                               <a 
                                 href={msg.fileData.url} 
                                 download={msg.fileData.name}
-                                className={`flex items-center justify-center gap-2 w-full py-1.5 ${minorSquircle} text-xs font-medium transition-colors ${msg.isSelf ? 'bg-white/20 hover:bg-white/30 text-white' : 'bg-emerald-600 hover:bg-emerald-500 text-white'}`}
+                                className={`flex items-center justify-center gap-2 w-full py-2.5 rounded-[16px] text-sm font-bold transition-all ${msg.isSelf ? 'bg-black/20 hover:bg-black/30 text-[#0A0A0A]' : 'bg-emerald-500 hover:bg-emerald-400 text-[#0A0A0A]'}`}
                               >
-                                <Download className="w-3.5 h-3.5" /> Download
+                                <Download className="w-4 h-4" /> Download
                               </a>
                             ) : null}
                           </div>
@@ -797,39 +820,46 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
                           msg.message
                         )}
                       </div>
-                    </div>
+                    </motion.div>
                   ))
                 )}
                 <div ref={chatScrollRef} />
               </div>
               
-              <div className="p-4 bg-[#1A1A1A] border-t border-white/5">
-                <form onSubmit={sendChatMessage} className="flex items-center gap-2 relative">
+              <div className="p-5 bg-[#141414] border-t border-white/5">
+                <form onSubmit={sendChatMessage} className="flex items-center gap-3 relative">
                   <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
                   <button 
                     type="button" 
                     onClick={() => fileInputRef.current?.click()}
-                    className={`p-2 text-slate-400 hover:text-emerald-400 hover:bg-emerald-400/10 ${minorSquircle} transition-colors`}
+                    className={`p-3 text-slate-400 hover:text-emerald-400 hover:bg-emerald-400/10 rounded-[16px] transition-all active:scale-95`}
                   >
-                    <FileUp className="w-5 h-5" />
+                    <FileUp className="w-6 h-6" />
+                  </button>
+                  <button 
+                    type="button"
+                    onClick={() => setChatInput(prev => prev + '😀')}
+                    className={`p-3 text-slate-400 hover:text-emerald-400 hover:bg-emerald-400/10 rounded-[16px] transition-all active:scale-95`}
+                  >
+                    <Smile className="w-6 h-6" />
                   </button>
                   <input 
                     type="text" 
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
                     placeholder="Message everyone..." 
-                    className={`flex-1 bg-[#222222] border border-white/10 ${minorSquircle} px-4 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-emerald-500/50 focus:bg-[#2A2A2A] transition-all min-w-0`}
+                    className={`flex-1 bg-[#1A1A1A] border border-white/10 rounded-[20px] px-5 py-3.5 text-base text-white placeholder:text-slate-500 focus:outline-none focus:border-emerald-500/50 focus:bg-[#222222] transition-all min-w-0 font-medium`}
                   />
                   <button 
                     type="submit" 
                     disabled={!chatInput.trim()}
-                    className={`p-2.5 bg-emerald-600 text-white hover:bg-emerald-500 ${minorSquircle} disabled:opacity-50 disabled:hover:bg-emerald-600 transition-colors`}
+                    className={`p-3.5 bg-emerald-500 text-[#0A0A0A] shadow-[0_0_20px_rgba(16,185,129,0.3)] hover:shadow-[0_0_30px_rgba(16,185,129,0.5)] rounded-[20px] disabled:opacity-50 disabled:shadow-none transition-all active:scale-95`}
                   >
-                    <Send className="w-4 h-4 ml-0.5" />
+                    <Send className="w-5 h-5 ml-0.5" />
                   </button>
                 </form>
                 {Object.keys(activeUploads).length > 0 && (
-                   <div className="mt-2 text-[10px] text-slate-400 font-medium">
+                   <div className="mt-3 text-xs text-emerald-400 font-semibold px-2">
                      Uploading {Object.keys(activeUploads).length} file(s)...
                    </div>
                 )}
@@ -939,12 +969,16 @@ const PeerVideo = ({
   stream, 
   peerID, 
   isHandRaised, 
-  peerReactions
+  peerReactions,
+  isHostPOV,
+  onKick
 }: { 
   stream: MediaStream, 
   peerID: string, 
   isHandRaised: boolean, 
-  peerReactions: Reaction[]
+  peerReactions: Reaction[],
+  isHostPOV?: boolean,
+  onKick?: () => void
 }) => {
   const ref = useRef<HTMLVideoElement>(null);
   const squircle = "rounded-[24px]";
@@ -961,7 +995,7 @@ const PeerVideo = ({
     <motion.div 
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
-      className={`relative bg-[#1E1E1E] ${squircle} overflow-hidden shadow-sm flex items-center justify-center min-h-[160px] border border-[#2A2A2A] group`}
+      className={`relative bg-[#1E1E1E] ${squircle} overflow-hidden shadow-sm flex items-center justify-center min-h-[160px] border border-[#2A2A2A] group transition-all`}
     >
       <video 
         ref={ref} 
@@ -971,6 +1005,7 @@ const PeerVideo = ({
       />
 
       <div className={`absolute bottom-4 left-4 bg-black/60 backdrop-blur-xl px-3 py-1.5 flex items-center ${minorSquircle} text-white text-xs font-medium border border-white/10 shadow-lg`}>
+        {peerID.includes('pure-meet-room-') ? <Shield className="w-3.5 h-3.5 text-amber-500 mr-1.5" /> : null}
         Participant {peerID.substring(peerID.length - 5)}
       </div>
 
@@ -980,9 +1015,27 @@ const PeerVideo = ({
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0, opacity: 0 }}
-            className={`absolute top-4 right-4 w-9 h-9 bg-emerald-600 ${minorSquircle} flex items-center justify-center text-white shadow-xl border-2 border-[#1E1E1E]`}
+            className={`absolute top-4 right-20 w-9 h-9 bg-emerald-600 ${minorSquircle} flex items-center justify-center text-white shadow-xl border-2 border-[#1E1E1E]`}
           >
             <Hand className="w-4 h-4" />
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {isHostPOV && (
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className={`absolute top-4 right-4 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity`}
+          >
+            <button
+              onClick={onKick}
+              className={`w-9 h-9 bg-red-600/90 hover:bg-red-600 ${minorSquircle} flex items-center justify-center text-white shadow-xl backdrop-blur-md`}
+              title="Kick User"
+            >
+              <UserX className="w-4 h-4" />
+            </button>
           </motion.div>
         )}
       </AnimatePresence>

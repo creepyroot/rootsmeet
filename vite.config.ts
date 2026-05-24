@@ -5,7 +5,7 @@ import {defineConfig} from 'vite';
 
 export default defineConfig(() => {
   return {
-    base: './',
+    base: '', // Empty string makes built assets use relative paths seamlessly for GH pages
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
