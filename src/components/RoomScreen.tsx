@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import Peer, { MediaConnection, DataConnection } from 'peerjs';
 import { Mic, MicOff, Video as VidIcon, VideoOff, PhoneOff, MonitorUp, Users, Copy, Check, MessageSquare, X, Send, Hand, Smile, Shield, ShieldOff, UserX, FileUp, Download, MicOff as MicOffAdmin, VideoOff as VideoOffAdmin, Disc2, Subtitles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
+import InteractivePanel from './InteractivePanel';
 
 interface RoomScreenProps {
   roomId: string;
@@ -75,6 +76,8 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   
   const [activeUploads, setActiveUploads] = useState<Record<string, number>>({});
   const filesRef = useRef<Record<string, { name: string, total: number, received: number, chunks: any[], complete: boolean, url?: string }>>({});
+
+  const [polls, setPolls] = useState<{ id: string, creatorId: string, question: string, options: { text: string, votes: number, voters: string[] }[] }[]>([]);
 
   const showChatRef = useRef(showChat);
 
@@ -157,6 +160,37 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         streamRef.current.getVideoTracks().forEach(t => t.enabled = false);
         setIsVideoOff(true);
       }
+    } else if (data.type === 'poll_create') {
+      setPolls(prev => [...prev, data.payload]);
+    } else if (data.type === 'poll_vote') {
+      setPolls(prev => prev.map(p => {
+        if (p.id !== data.payload.pollId) return p;
+        return {
+          ...p,
+          options: p.options.map((opt, idx) => {
+            if (idx !== data.payload.optionIdx) return opt;
+            return {
+              ...opt,
+              votes: opt.votes + 1,
+              voters: [...opt.voters, data.payload.voterId]
+            };
+          })
+        };
+      }));
+    } else if (data.type === 'canvas_draw') {
+      window.dispatchEvent(new CustomEvent('peer-draw', { detail: data.payload }));
+    } else if (data.type === 'canvas_clear') {
+      window.dispatchEvent(new CustomEvent('peer-canvas-clear'));
+    } else if (data.type === 'sound_trigger') {
+      const { soundType } = data.payload;
+      import('../utils/audioSynth').then(({ playSynthSound }) => {
+        playSynthSound(soundType);
+      });
+      // Temporarily display an animated reaction corresponding to the triggered sound!
+      const emojis: Record<string, string> = { chime: '🔔', ding: '🛎️', scifi: '⚡', pop: '🧼' };
+      const reactionId = Math.random().toString();
+      setReactions(prev => [...prev, { id: reactionId, userId: senderId, emoji: emojis[soundType] || '🔊' }]);
+      setTimeout(() => setReactions(prev => prev.filter(r => r.id !== reactionId)), 3000);
     }
   }, [isHost]);
 
@@ -218,19 +252,84 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
 
     const initMediaAndPeer = async () => {
       let stream: MediaStream | null = null;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ 
-          video: initialMedia?.video !== false ? { height: 720, width: 1280 } : false, 
-          audio: true 
-        });
-        if (initialMedia?.mic === false) {
-          stream.getAudioTracks().forEach(t => t.enabled = false);
+      
+      const getMediaStream = async (): Promise<MediaStream> => {
+        const videoConstraint = initialMedia?.video !== false ? { 
+          width: { ideal: 1280 }, 
+          height: { ideal: 720 }, 
+          facingMode: 'user' 
+        } : false;
+
+        // Try 1: Try both mic and video (with ideal video spec)
+        try {
+          return await navigator.mediaDevices.getUserMedia({
+            video: videoConstraint,
+            audio: initialMedia?.mic !== false
+          });
+        } catch (e) {
+          console.warn("Try 1 failed (both ideal):", e);
         }
-      } catch (err) {
-        console.warn("Media failed", err);
-        stream = new MediaStream(); // Dummy stream if all fails
+
+        // Try 2: Try both mic and video (standard/simple video spec)
+        try {
+          return await navigator.mediaDevices.getUserMedia({
+            video: initialMedia?.video !== false,
+            audio: initialMedia?.mic !== false
+          });
+        } catch (e) {
+          console.warn("Try 2 failed (both simple):", e);
+        }
+
+        // Try 3: Try video only (ideal spec)
+        if (initialMedia?.video !== false) {
+          try {
+            const vs = await navigator.mediaDevices.getUserMedia({
+              video: videoConstraint,
+              audio: false
+            });
+            setIsMuted(true); // Since mic failed or is disabled
+            return vs;
+          } catch (e) {
+            console.warn("Try 3 failed (video ideal only):", e);
+          }
+
+          // Try 4: Try video only (simple spec)
+          try {
+            const vs = await navigator.mediaDevices.getUserMedia({
+              video: true,
+              audio: false
+            });
+            setIsMuted(true);
+            return vs;
+          } catch (e) {
+            console.warn("Try 4 failed (video simple only):", e);
+          }
+        }
+
+        // Try 5: Try audio only
+        if (initialMedia?.mic !== false) {
+          try {
+            const as = await navigator.mediaDevices.getUserMedia({
+              video: false,
+              audio: true
+            });
+            setIsVideoOff(true);
+            return as;
+          } catch (e) {
+            console.warn("Try 5 failed (audio only):", e);
+          }
+        }
+
+        // Fallback: Empty stream
         setIsVideoOff(true);
         setIsMuted(true);
+        return new MediaStream();
+      };
+
+      stream = await getMediaStream();
+
+      if (initialMedia?.mic === false && stream) {
+        stream.getAudioTracks().forEach(t => t.enabled = false);
       }
 
       if (cancelled) return;
@@ -278,10 +377,24 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         });
       };
 
+      const peerOptions = {
+        debug: 1,
+        host: '0.peerjs.com',
+        port: 443,
+        secure: true,
+        config: {
+          'iceServers': [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' }
+          ]
+        }
+      };
+
       // Try forming as Host
-      const tryHost = new Peer(roomPeerId, {
-        config: {'iceServers': [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }]}
-      });
+      const tryHost = new Peer(roomPeerId, peerOptions);
 
       tryHost.on('open', (id) => {
         if (cancelled) return;
@@ -294,9 +407,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         if (cancelled) return;
         if (err.type === 'unavailable-id') {
           // Room exists, join as guest
-          const guestPeer = new Peer({
-            config: {'iceServers': [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }]}
-          });
+          const guestPeer = new Peer(peerOptions);
           setIsHost(false);
           peerRef.current = guestPeer;
           setupPeerHandlers(guestPeer);
@@ -370,9 +481,34 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     }
   }, [messages, showChat]);
 
-  const toggleMute = () => {
+  const toggleMute = async () => {
     if (streamRef.current) {
-      const audioTrack = streamRef.current.getAudioTracks()[0];
+      let audioTrack = streamRef.current.getAudioTracks()[0];
+      if (!audioTrack) {
+        try {
+          const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          const newTrack = tempStream.getAudioTracks()[0];
+          if (newTrack) {
+            streamRef.current.addTrack(newTrack);
+            audioTrack = newTrack;
+            mediaConnections.current.forEach(call => {
+              const pc = call.peerConnection;
+              if (pc) {
+                const senders = pc.getSenders();
+                const sender = senders.find(s => s.track?.kind === 'audio');
+                if (sender) {
+                  sender.replaceTrack(newTrack);
+                } else {
+                  pc.addTrack(newTrack, streamRef.current!);
+                }
+              }
+            });
+          }
+        } catch (e) {
+          console.error("Failed to acquire audio track on toggle:", e);
+          return;
+        }
+      }
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         setIsMuted(!audioTrack.enabled);
@@ -380,9 +516,37 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     }
   };
 
-  const toggleVideo = () => {
+  const toggleVideo = async () => {
     if (streamRef.current) {
-      const videoTrack = streamRef.current.getVideoTracks()[0];
+      let videoTrack = streamRef.current.getVideoTracks()[0];
+      if (!videoTrack) {
+        try {
+          const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+          const newTrack = tempStream.getVideoTracks()[0];
+          if (newTrack) {
+            streamRef.current.addTrack(newTrack);
+            videoTrack = newTrack;
+            if (userVideo.current) {
+              userVideo.current.srcObject = streamRef.current;
+            }
+            mediaConnections.current.forEach(call => {
+              const pc = call.peerConnection;
+              if (pc) {
+                const senders = pc.getSenders();
+                const sender = senders.find(s => s.track?.kind === 'video');
+                if (sender) {
+                  sender.replaceTrack(newTrack);
+                } else {
+                  pc.addTrack(newTrack, streamRef.current!);
+                }
+              }
+            });
+          }
+        } catch (e) {
+          console.error("Failed to acquire video track on toggle:", e);
+          return;
+        }
+      }
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoOff(!videoTrack.enabled);
@@ -477,11 +641,9 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   const sendReaction = (emoji: string) => {
     broadcastData('reaction', { emoji });
     setShowEmojiPicker(false);
-    if (peerRef.current) {
-        const reactionId = Math.random().toString();
-        setReactions(prev => [...prev, { id: reactionId, userId: peerRef.current!.id, emoji }]);
-        setTimeout(() => setReactions(prev => prev.filter(r => r.id !== reactionId)), 3000);
-    }
+    const reactionId = Math.random().toString();
+    setReactions(prev => [...prev, { id: reactionId, userId: 'local', emoji }]);
+    setTimeout(() => setReactions(prev => prev.filter(r => r.id !== reactionId)), 3000);
   };
 
   const sendChatMessage = (e: React.FormEvent) => {
@@ -577,9 +739,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   const participantCount = peers.length + 1;
   const gridTemplate = participantCount === 1 
     ? { gridTemplateColumns: '1fr', gridTemplateRows: '1fr' }
-    : participantCount === 2
-    ? { gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }
-    : { gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' };
+    : { gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 280px), 1fr))' };
 
   if (!isReady) {
     return <div className="h-full w-full bg-[#111111] flex items-center justify-center text-white">
@@ -653,23 +813,25 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
             className={`w-full max-w-[1600px] h-full grid gap-3 md:gap-4 auto-rows-fr transition-all duration-500 relative`}
             style={gridTemplate}
           >
-            <div className={`relative bg-[#1E1E1E] ${squircle} overflow-hidden shadow-sm flex items-center justify-center min-h-[160px] border border-[#2A2A2A] transition-all`}>
-              <video 
-                ref={userVideo} 
-                autoPlay 
-                muted 
-                playsInline 
-                className={`w-full h-full object-cover ${isVideoOff ? 'hidden' : ''} ${isScreenSharing ? '' : '-scale-x-100'}`} 
-              />
-              {isVideoOff && (
-                <div className="absolute inset-0 flex items-center justify-center bg-[#1E1E1E]">
-                  <div className={`w-20 h-20 ${squircle} bg-slate-800 flex items-center justify-center shadow-inner`}>
-                    <span className="text-2xl text-slate-300 font-medium">You</span>
+            <div className="relative min-h-[160px] group transition-all">
+              <div className={`absolute inset-0 bg-[#1E1E1E] ${squircle} overflow-hidden shadow-sm flex items-center justify-center border border-[#2A2A2A]`}>
+                <video 
+                  ref={userVideo} 
+                  autoPlay 
+                  muted 
+                  playsInline 
+                  className={`w-full h-full object-cover ${isVideoOff ? 'hidden' : ''} ${isScreenSharing ? '' : '-scale-x-100'}`} 
+                />
+                {isVideoOff && (
+                  <div className="absolute inset-0 flex items-center justify-center bg-[#1E1E1E]">
+                    <div className={`w-20 h-20 ${squircle} bg-slate-800 flex items-center justify-center shadow-inner`}>
+                      <span className="text-2xl text-slate-300 font-medium">You</span>
+                    </div>
                   </div>
+                )}
+                <div className={`absolute bottom-4 left-4 bg-black/60 backdrop-blur-xl px-3 py-1.5 ${minorSquircle} text-white text-xs font-medium flex items-center border border-white/10 shadow-lg z-10`}>
+                  You {isMuted ? <MicOff className="w-3.5 h-3.5 text-red-500 ml-2" /> : <AudioVisualizer stream={localStream} />}
                 </div>
-              )}
-              <div className={`absolute bottom-4 left-4 bg-black/60 backdrop-blur-xl px-3 py-1.5 ${minorSquircle} text-white text-xs font-medium flex items-center border border-white/10 shadow-lg`}>
-                You {isMuted ? <MicOff className="w-3.5 h-3.5 text-red-500 ml-2" /> : <AudioVisualizer stream={localStream} />}
               </div>
 
               <AnimatePresence>
@@ -678,23 +840,23 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
                     initial={{ scale: 0, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
                     exit={{ scale: 0, opacity: 0 }}
-                    className={`absolute top-4 right-4 w-9 h-9 bg-emerald-600 ${minorSquircle} flex items-center justify-center text-white shadow-xl border-2 border-[#1E1E1E]`}
+                    className={`absolute top-4 right-4 w-9 h-9 bg-emerald-600 ${minorSquircle} flex items-center justify-center text-white shadow-xl border-2 border-[#1E1E1E] z-10`}
                   >
                     <Hand className="w-4 h-4" />
                   </motion.div>
                 )}
               </AnimatePresence>
 
-              <div className="absolute inset-0 pointer-events-none overflow-hidden">
+              <div className="absolute inset-x-0 bottom-10 top-0 pointer-events-none overflow-visible z-20">
                 <AnimatePresence>
-                  {reactions.filter(r => r.userId === peerRef.current?.id).map(r => (
+                  {reactions.filter(r => r.userId === 'local').map(r => (
                     <motion.div
                       key={r.id}
                       initial={{ y: 50, opacity: 0, scale: 0.5 }}
-                      animate={{ y: -120, opacity: 1, scale: 2.5 }}
+                      animate={{ y: -150, opacity: 1, scale: 2.8 }}
                       exit={{ opacity: 0 }}
                       transition={{ duration: 2.5, ease: "easeOut" }}
-                      className="absolute bottom-10 left-1/2 -translate-x-1/2 text-4xl drop-shadow-lg"
+                      className="absolute bottom-4 left-1/2 -translate-x-1/2 text-4xl drop-shadow-xl"
                     >
                       {r.emoji}
                     </motion.div>
@@ -747,219 +909,117 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         </AnimatePresence>
 
         <AnimatePresence>
-          {showChat && (
-             <motion.aside 
-              initial={{ y: -100, opacity: 0, scale: 0.8, filter: "blur(10px)" }}
-              animate={{ y: 0, opacity: 1, scale: 1, filter: "blur(0px)" }}
-              exit={{ y: -50, opacity: 0, scale: 0.8, filter: "blur(10px)" }}
-              transition={{ type: 'spring', damping: 25, stiffness: 300 }}
-              className={`absolute top-4 left-1/2 -translate-x-1/2 w-[90%] max-w-3xl h-[75vh] max-h-[800px] bg-[#0A0A0A]/95 backdrop-blur-3xl border border-white/10 flex flex-col z-[100] shadow-[0_40px_100px_rgba(0,0,0,0.8)] rounded-[32px] overflow-hidden`}
-            >
-              <div className="h-16 border-b border-white/5 flex items-center justify-between px-6 shrink-0 bg-[#141414]/80">
-                <h3 className="text-white font-bold text-lg flex items-center gap-3 tracking-tight">
-                  <MessageSquare className="w-5 h-5 text-emerald-400" /> Room Chat
-                </h3>
-                <button onClick={() => setShowChat(false)} className={`p-2 rounded-[16px] text-slate-400 hover:bg-white/10 hover:text-white transition-all active:scale-95`}>
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-              
-              <div className="flex-1 overflow-y-auto p-6 flex flex-col gap-4 scroll-smooth overflow-x-hidden">
-                {messages.length === 0 ? (
-                  <div className="flex-1 flex flex-col items-center justify-center text-slate-500 space-y-4">
-                    <div className={`w-16 h-16 rounded-[24px] bg-white/5 flex items-center justify-center`}>
-                      <MessageSquare className="w-8 h-8 opacity-40 text-emerald-400" />
-                    </div>
-                    <p className="text-base font-medium">No messages yet.</p>
-                  </div>
-                ) : (
-                  messages.map((msg) => (
-                    <motion.div 
-                      key={msg.id} 
-                      initial={{ opacity: 0, y: 10, scale: 0.95 }}
-                      animate={{ opacity: 1, y: 0, scale: 1 }}
-                      className={`flex flex-col ${msg.isSelf ? 'items-end' : 'items-start'}`}
-                    >
-                      <div className="flex items-center gap-2 mb-1.5 px-1">
-                        <span className={`text-[11px] font-bold tracking-wide uppercase ${msg.isSelf ? 'text-emerald-400' : 'text-slate-400'}`}>
-                          {msg.isSelf ? 'You' : msg.senderName || 'Peer'}
-                        </span>
-                        <span className="text-[10px] text-slate-500 font-medium">{formatTime(msg.timestamp)}</span>
-                      </div>
-                      <div className={`px-5 py-3 rounded-[24px] text-base max-w-[85%] shadow-md ${
-                        msg.isSelf 
-                          ? 'bg-emerald-500 text-[#0A0A0A] rounded-tr-sm font-medium' 
-                          : 'bg-[#1A1A1A] text-slate-200 rounded-tl-sm border border-white/5'
-                      } break-words leading-relaxed`}>
-                        {msg.isFile && msg.fileData ? (
-                          <div className="flex flex-col gap-3 min-w-[240px]">
-                            <div className={`flex items-center gap-3 bg-black/20 p-3 rounded-[16px]`}>
-                              <FileUp className={`w-10 h-10 text-white/70 p-2 bg-black/20 rounded-[12px]`} />
-                              <div className="flex-1 min-w-0">
-                                <p className="text-sm font-semibold truncate">{msg.fileData.name}</p>
-                                <p className="text-xs opacity-70 font-medium mt-0.5">
-                                  {msg.fileData.progress === 100 ? 'Complete' : `${msg.fileData.progress}%`}
-                                </p>
-                              </div>
-                            </div>
-                            {msg.fileData.progress < 100 ? (
-                              <div className={`w-full bg-black/30 rounded-full h-2 overflow-hidden`}>
-                                <div className="bg-white h-full transition-all duration-300 rounded-full" style={{ width: `${msg.fileData.progress}%` }}></div>
-                              </div>
-                            ) : msg.fileData.url ? (
-                              <a 
-                                href={msg.fileData.url} 
-                                download={msg.fileData.name}
-                                className={`flex items-center justify-center gap-2 w-full py-2.5 rounded-[16px] text-sm font-bold transition-all ${msg.isSelf ? 'bg-black/20 hover:bg-black/30 text-[#0A0A0A]' : 'bg-emerald-500 hover:bg-emerald-400 text-[#0A0A0A]'}`}
-                              >
-                                <Download className="w-4 h-4" /> Download
-                              </a>
-                            ) : null}
-                          </div>
-                        ) : (
-                          msg.message
-                        )}
-                      </div>
-                    </motion.div>
-                  ))
-                )}
-                <div ref={chatScrollRef} />
-              </div>
-              
-              <div className="p-5 bg-[#141414] border-t border-white/5">
-                <form onSubmit={sendChatMessage} className="flex items-center gap-3 relative">
-                  <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
-                  <button 
-                    type="button" 
-                    onClick={() => fileInputRef.current?.click()}
-                    className={`p-3 text-slate-400 hover:text-emerald-400 hover:bg-emerald-400/10 rounded-[16px] transition-all active:scale-95`}
-                  >
-                    <FileUp className="w-6 h-6" />
-                  </button>
-                  <button 
-                    type="button"
-                    onClick={() => setChatInput(prev => prev + '😀')}
-                    className={`p-3 text-slate-400 hover:text-emerald-400 hover:bg-emerald-400/10 rounded-[16px] transition-all active:scale-95`}
-                  >
-                    <Smile className="w-6 h-6" />
-                  </button>
-                  <input 
-                    type="text" 
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
-                    placeholder="Message everyone..." 
-                    className={`flex-1 bg-[#1A1A1A] border border-white/10 rounded-[20px] px-5 py-3.5 text-base text-white placeholder:text-slate-500 focus:outline-none focus:border-emerald-500/50 focus:bg-[#222222] transition-all min-w-0 font-medium`}
-                  />
-                  <button 
-                    type="submit" 
-                    disabled={!chatInput.trim()}
-                    className={`p-3.5 bg-emerald-500 text-[#0A0A0A] shadow-[0_0_20px_rgba(16,185,129,0.3)] hover:shadow-[0_0_30px_rgba(16,185,129,0.5)] rounded-[20px] disabled:opacity-50 disabled:shadow-none transition-all active:scale-95`}
-                  >
-                    <Send className="w-5 h-5 ml-0.5" />
-                  </button>
-                </form>
-                {Object.keys(activeUploads).length > 0 && (
-                   <div className="mt-3 text-xs text-emerald-400 font-semibold px-2">
-                     Uploading {Object.keys(activeUploads).length} file(s)...
-                   </div>
-                )}
-              </div>
-            </motion.aside>
+          {showChat && peerRef.current && (
+            <InteractivePanel
+              onClose={() => setShowChat(false)}
+              messages={messages as any}
+              chatInput={chatInput}
+              setChatInput={setChatInput}
+              sendChatMessage={sendChatMessage}
+              fileInputRef={fileInputRef}
+              handleFileUpload={handleFileUpload}
+              activeUploads={activeUploads}
+              polls={polls}
+              setPolls={setPolls as any}
+              broadcastData={broadcastData}
+              userId={peerRef.current.id}
+              userName={userName}
+            />
           )}
         </AnimatePresence>
       </div>
 
-      <footer className="h-[88px] flex items-center justify-center px-6 shrink-0 w-full bg-gradient-to-t from-[#111111] to-transparent absolute bottom-0 z-20 pb-4 pointer-events-none">
-        <div className={`flex items-center gap-2 sm:gap-3 bg-[#1A1A1A]/95 backdrop-blur-xl border border-white/10 p-2 sm:p-2.5 ${squircle} shadow-2xl pointer-events-auto`}>
+      <footer className="h-[88px] flex items-center justify-center px-4 shrink-0 w-full bg-gradient-to-t from-[#111111] to-transparent absolute bottom-0 z-20 pb-4 pointer-events-none">
+        <div className={`flex items-center gap-1.5 sm:gap-3 bg-[#1A1A1A]/95 backdrop-blur-xl border border-white/10 p-1.5 sm:p-2.5 rounded-[24px] shadow-2xl pointer-events-auto max-w-[96vw] overflow-x-auto scrollbar-none`}>
           <button 
             onClick={toggleMute}
-            className={`w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center ${minorSquircle} transition-all ${isMuted ? 'bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
+            className={`w-10 h-10 sm:w-12 sm:h-12 flex-shrink-0 flex items-center justify-center ${minorSquircle} transition-all ${isMuted ? 'bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
             title="Toggle Microphone"
           >
-            {isMuted ? <MicOff className="w-5 h-5" /> : <Mic className="w-5 h-5" />}
+            {isMuted ? <MicOff className="w-4.5 h-4.5 sm:w-5 h-5" /> : <Mic className="w-4.5 h-4.5 sm:w-5 h-5" />}
           </button>
           
           <button 
             onClick={toggleVideo}
-            className={`w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center ${minorSquircle} transition-all ${isVideoOff ? 'bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
+            className={`w-10 h-10 sm:w-12 sm:h-12 flex-shrink-0 flex items-center justify-center ${minorSquircle} transition-all ${isVideoOff ? 'bg-red-500 hover:bg-red-600 text-white shadow-lg shadow-red-500/20' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
             title="Toggle Camera"
           >
-            {isVideoOff ? <VideoOff className="w-5 h-5" /> : <VidIcon className="w-5 h-5" />}
+            {isVideoOff ? <VideoOff className="w-4.5 h-4.5 sm:w-5 h-5" /> : <VidIcon className="w-4.5 h-4.5 sm:w-5 h-5" />}
           </button>
           
           <button 
             onClick={toggleScreenShare}
-            className={`w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center ${minorSquircle} transition-all ${isScreenSharing ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
+            className={`w-10 h-10 sm:w-12 sm:h-12 flex-shrink-0 flex items-center justify-center ${minorSquircle} transition-all ${isScreenSharing ? 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-500/20' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
             title="Share Screen"
           >
-            <MonitorUp className="w-5 h-5" />
+            <MonitorUp className="w-4.5 h-4.5 sm:w-5 h-5" />
           </button>
 
           <button 
             onClick={() => setShowCaptions(!showCaptions)}
-            className={`w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center ${minorSquircle} transition-all ${showCaptions ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/20' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
+            className={`w-10 h-10 sm:w-12 sm:h-12 flex-shrink-0 flex items-center justify-center ${minorSquircle} transition-all ${showCaptions ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/20' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
             title="Toggle Captions"
           >
-            <Subtitles className="w-5 h-5" />
+            <Subtitles className="w-4.5 h-4.5 sm:w-5 h-5" />
           </button>
 
           <button 
             onClick={toggleRecording}
-            className={`w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center ${minorSquircle} transition-all ${isRecording ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-lg shadow-red-500/20' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
+            className={`w-10 h-10 sm:w-12 sm:h-12 flex-shrink-0 flex items-center justify-center ${minorSquircle} transition-all ${isRecording ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-lg shadow-red-500/20' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
             title="Record Meeting"
           >
-            <Disc2 className="w-5 h-5" />
+            <Disc2 className="w-4.5 h-4.5 sm:w-5 h-5" />
           </button>
 
-          <div className="relative">
+          <div className="relative flex-shrink-0">
             <button 
               onClick={() => setShowEmojiPicker(!showEmojiPicker)}
-              className={`w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center ${minorSquircle} transition-all ${showEmojiPicker ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}`}
+              className={`w-10 h-10 sm:w-12 sm:h-12 flex items-center justify-center ${minorSquircle} transition-all ${showEmojiPicker ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-500/20' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}`}
               title="React"
             >
-              <Smile className="w-5 h-5" />
+              <Smile className="w-4.5 h-4.5 sm:w-5 h-5" />
             </button>
-
-            <AnimatePresence>
-              {showEmojiPicker && (
-                <motion.div 
-                  initial={{ opacity: 0, y: 10, scale: 0.9 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: 10, scale: 0.9 }}
-                  className={`absolute bottom-16 left-1/2 -translate-x-1/2 bg-[#222222] border border-white/10 ${squircle} p-2 flex gap-1.5 shadow-2xl`}
-                >
-                  {['👍', '❤️', '😂', '🎉', '👋', '👀'].map(emoji => (
-                    <button
-                      key={emoji}
-                      onClick={() => sendReaction(emoji)}
-                      className={`w-10 h-10 sm:w-12 sm:h-12 flex items-center justify-center text-xl sm:text-2xl hover:bg-slate-700 ${minorSquircle} transition-all hover:scale-110 active:scale-95`}
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
           </div>
 
           <button 
             onClick={toggleHandRaise}
-            className={`w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center ${minorSquircle} transition-all ${handRaised ? 'bg-amber-500 hover:bg-amber-400 text-white shadow-lg shadow-amber-500/20' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}`}
+            className={`w-10 h-10 sm:w-12 sm:h-12 flex-shrink-0 flex items-center justify-center ${minorSquircle} transition-all ${handRaised ? 'bg-amber-500 hover:bg-amber-400 text-white shadow-lg shadow-amber-500/20' : 'bg-slate-800 hover:bg-slate-700 text-slate-300'}`}
             title={handRaised ? "Lower Hand" : "Raise Hand"}
           >
-            <Hand className="w-5 h-5" />
+            <Hand className="w-4.5 h-4.5 sm:w-5 h-5" />
           </button>
 
-          <div className="w-[1px] h-8 bg-slate-700/50 mx-1 hidden sm:block"></div>
+          <div className="w-[1px] h-8 bg-slate-700/50 mx-1 flex-shrink-0 hidden sm:block"></div>
 
           <button 
             onClick={onLeave}
-            className={`w-14 sm:w-16 h-11 sm:h-12 flex items-center justify-center ${minorSquircle} bg-red-600 hover:bg-red-500 text-white transition-all shadow-lg shadow-red-600/20`}
+            className={`w-13 xs:w-14 sm:w-16 h-10 sm:h-12 flex-shrink-0 flex items-center justify-center ${minorSquircle} bg-red-600 hover:bg-red-500 text-white transition-all shadow-lg shadow-red-600/20`}
             title="Leave Meeting"
           >
-            <PhoneOff className="w-5 h-5" />
+            <PhoneOff className="w-4.5 h-4.5 sm:w-5 h-5" />
           </button>
         </div>
+
+        <AnimatePresence>
+          {showEmojiPicker && (
+            <motion.div 
+              initial={{ opacity: 0, y: 15, scale: 0.9, x: "-50%" }}
+              animate={{ opacity: 1, y: 0, scale: 1, x: "-50%" }}
+              exit={{ opacity: 0, y: 15, scale: 0.9, x: "-50%" }}
+              className={`absolute bottom-[96px] left-1/2 bg-[#1E1E1E]/95 backdrop-blur-3xl border border-white/10 ${squircle} p-2.5 flex gap-2 shadow-2xl z-50 pointer-events-auto`}
+            >
+              {['👍', '❤️', '😂', '🎉', '👋', '👀'].map(emoji => (
+                <button
+                  key={emoji}
+                  onClick={() => sendReaction(emoji)}
+                  className={`w-11 h-11 sm:w-13 sm:h-13 flex items-center justify-center text-xl sm:text-2xl hover:bg-slate-800/80 ${minorSquircle} transition-all hover:scale-110 active:scale-95 text-white`}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
       </footer>
     </div>
   );
@@ -996,18 +1056,20 @@ const PeerVideo = ({
     <motion.div 
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
-      className={`relative bg-[#1E1E1E] ${squircle} overflow-hidden shadow-sm flex items-center justify-center min-h-[160px] border border-[#2A2A2A] group transition-all`}
+      className="relative min-h-[160px] group transition-all"
     >
-      <video 
-        ref={ref} 
-        autoPlay 
-        playsInline 
-        className="w-full h-full object-cover" 
-      />
+      <div className={`absolute inset-0 bg-[#1E1E1E] ${squircle} overflow-hidden border border-[#2A2A2A] flex items-center justify-center shadow-sm`}>
+        <video 
+          ref={ref} 
+          autoPlay 
+          playsInline 
+          className="w-full h-full object-cover" 
+        />
 
-      <div className={`absolute bottom-4 left-4 bg-black/60 backdrop-blur-xl px-3 py-1.5 flex items-center ${minorSquircle} text-white text-xs font-medium border border-white/10 shadow-lg`}>
-        {peerID.includes('pure-meet-room-') ? <Shield className="w-3.5 h-3.5 text-amber-500 mr-1.5" /> : null}
-        Participant {peerID.substring(peerID.length - 5)}
+        <div className={`absolute bottom-4 left-4 bg-black/60 backdrop-blur-xl px-3 py-1.5 flex items-center ${minorSquircle} text-white text-xs font-medium border border-white/10 shadow-lg z-10`}>
+          {peerID.includes('pure-meet-room-') ? <Shield className="w-3.5 h-3.5 text-amber-500 mr-1.5" /> : null}
+          Participant {peerID.substring(peerID.length - 5)}
+        </div>
       </div>
 
       <AnimatePresence>
@@ -1016,7 +1078,7 @@ const PeerVideo = ({
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0, opacity: 0 }}
-            className={`absolute top-4 right-20 w-9 h-9 bg-emerald-600 ${minorSquircle} flex items-center justify-center text-white shadow-xl border-2 border-[#1E1E1E]`}
+            className={`absolute top-4 right-20 w-9 h-9 bg-emerald-600 ${minorSquircle} flex items-center justify-center text-white shadow-xl border-2 border-[#1E1E1E] z-10`}
           >
             <Hand className="w-4 h-4" />
           </motion.div>
@@ -1028,12 +1090,12 @@ const PeerVideo = ({
           <motion.div 
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
-            className={`absolute top-4 right-4 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity`}
+            className={`absolute top-4 right-4 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10`}
           >
             <button
-              onClick={onKick}
-              className={`w-9 h-9 bg-red-600/90 hover:bg-red-600 ${minorSquircle} flex items-center justify-center text-white shadow-xl backdrop-blur-md`}
-              title="Kick User"
+               onClick={onKick}
+               className={`w-9 h-9 bg-red-600/90 hover:bg-red-600 ${minorSquircle} flex items-center justify-center text-white shadow-xl backdrop-blur-md`}
+               title="Kick User"
             >
               <UserX className="w-4 h-4" />
             </button>
@@ -1041,16 +1103,16 @@ const PeerVideo = ({
         )}
       </AnimatePresence>
 
-      <div className="absolute inset-0 pointer-events-none overflow-hidden">
+      <div className="absolute inset-x-0 bottom-10 top-0 pointer-events-none overflow-visible z-20">
         <AnimatePresence>
           {peerReactions.map(r => (
             <motion.div
               key={r.id}
               initial={{ y: 50, opacity: 0, scale: 0.5 }}
-              animate={{ y: -120, opacity: 1, scale: 2.5 }}
+              animate={{ y: -150, opacity: 1, scale: 2.8 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 2.5, ease: "easeOut" }}
-              className="absolute bottom-10 left-1/2 -translate-x-1/2 text-4xl drop-shadow-lg"
+              className="absolute bottom-4 left-1/2 -translate-x-1/2 text-4xl drop-shadow-xl"
             >
               {r.emoji}
             </motion.div>

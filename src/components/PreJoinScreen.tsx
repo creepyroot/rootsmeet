@@ -25,7 +25,11 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }: Pr
     const initPreview = async () => {
       try {
         currentStream = await navigator.mediaDevices.getUserMedia({ 
-          video: { width: 1280, height: 720 }, 
+          video: { 
+            width: { ideal: 1280 }, 
+            height: { ideal: 720 },
+            facingMode: "user"
+          }, 
           audio: true 
         });
         setStream(currentStream);
@@ -33,15 +37,28 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }: Pr
           videoRef.current.srcObject = currentStream;
         }
       } catch (err) {
-        console.warn("Could not get complete media", err);
+        console.warn("Optimal camera constraints failed, trying fallback...", err);
         try {
-           currentStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-           setStream(currentStream);
-           setVideoEnabled(false);
+          // Standard video/audio without resolution constraints
+          currentStream = await navigator.mediaDevices.getUserMedia({ 
+            video: true, 
+            audio: true 
+          });
+          setStream(currentStream);
+          if (videoRef.current) {
+            videoRef.current.srcObject = currentStream;
+          }
         } catch (err2) {
-           setError('Could not access microphone or camera. Please check permissions.');
-           setMicEnabled(false);
-           setVideoEnabled(false);
+          console.warn("No camera available, falling back to audio only.", err2);
+          try {
+            currentStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+            setStream(currentStream);
+            setVideoEnabled(false);
+          } catch (err3) {
+            setError('Could not access microphone or camera. Please check permissions.');
+            setMicEnabled(false);
+            setVideoEnabled(false);
+          }
         }
       }
     };
