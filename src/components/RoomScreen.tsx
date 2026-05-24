@@ -311,7 +311,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     initMediaAndPeer();
 
     // Setup Speech Recognition
-    const SpeechRecognition = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (SpeechRecognition) {
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
@@ -978,7 +978,8 @@ const PeerVideo = ({
   isHandRaised: boolean, 
   peerReactions: Reaction[],
   isHostPOV?: boolean,
-  onKick?: () => void
+  onKick?: () => void,
+  key?: any
 }) => {
   const ref = useRef<HTMLVideoElement>(null);
   const squircle = "rounded-[24px]";

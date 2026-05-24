@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Video, Keyboard, ArrowRight, User, Sparkles, Globe2, Shield, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
