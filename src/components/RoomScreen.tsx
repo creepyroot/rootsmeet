@@ -376,6 +376,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
 
       streamRef.current = stream;
       setLocalStream(stream);
+      setIsReady(true);
       if (userVideo.current) {
         userVideo.current.srcObject = stream;
       }
@@ -698,13 +699,13 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       const drawCompositorFrame = () => {
         if (!compositorActive) return;
         
-        // Dark metallic background matching user interface
+        // Dark premium background
         ctx.fillStyle = '#0F0F12';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         
-        // Query elements from domestic DOM dynamically (independent of complex refs)
-        const videos = Array.from(document.querySelectorAll('main video')) as HTMLVideoElement[];
-        const count = videos.length;
+        // Select all active participant cards (handles offline standbys as well)
+        const cards = Array.from(document.querySelectorAll('main [data-participant-card="true"]')) as HTMLDivElement[];
+        const count = cards.length;
         
         if (count > 0) {
           let cols = 1;
@@ -724,67 +725,126 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
           const cellWidth = canvas.width / cols;
           const cellHeight = canvas.height / rows;
           
-          videos.forEach((video, index) => {
+          cards.forEach((card, index) => {
             const col = index % cols;
             const row = Math.floor(index / cols);
             const x = col * cellWidth;
             const y = row * cellHeight;
             
-            try {
-              // Letterbox/Cover calculations
-              const vWidth = video.videoWidth || 640;
-              const vHeight = video.videoHeight || 480;
-              const vRatio = vWidth / vHeight;
-              const cellRatio = cellWidth / cellHeight;
-              
-              let drawW = cellWidth;
-              let drawH = cellHeight;
-              let drawX = x;
-              let drawY = y;
-              
-              if (cellRatio > vRatio) {
-                drawW = cellHeight * vRatio;
-                drawX = x + (cellWidth - drawW) / 2;
-              } else {
-                drawH = cellWidth / vRatio;
-                drawY = y + (cellHeight - drawH) / 2;
+            const pName = card.getAttribute('data-name') || `Participant ${index + 1}`;
+            const isVideoOffAttr = card.getAttribute('data-video-off') === 'true';
+            const video = card.querySelector('video') as HTMLVideoElement | null;
+            
+            // Draw a subtle quadrant framing
+            ctx.strokeStyle = '#1E1E24';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(x + 2, y + 2, cellWidth - 4, cellHeight - 4);
+            
+            if (video && !isVideoOffAttr && video.videoWidth > 0) {
+              try {
+                const vWidth = video.videoWidth;
+                const vHeight = video.videoHeight;
+                const vRatio = vWidth / vHeight;
+                const cellRatio = cellWidth / cellHeight;
+                
+                let drawW = cellWidth;
+                let drawH = cellHeight;
+                let drawX = x;
+                let drawY = y;
+                
+                if (cellRatio > vRatio) {
+                  drawW = cellHeight * vRatio;
+                  drawX = x + (cellWidth - drawW) / 2;
+                } else {
+                  drawH = cellWidth / vRatio;
+                  drawY = y + (cellHeight - drawH) / 2;
+                }
+                
+                ctx.save();
+                ctx.beginPath();
+                ctx.rect(x + 4, y + 4, cellWidth - 8, cellHeight - 8);
+                ctx.clip();
+                
+                // If it is our local video, mirror it to look natural inside the webm composition
+                const isLocal = card.getAttribute('data-peer-id') === 'local';
+                if (isLocal && !isScreenSharing) {
+                  ctx.translate(drawX + drawW, drawY);
+                  ctx.scale(-1, 1);
+                  ctx.drawImage(video, 0, 0, drawW, drawH);
+                } else {
+                  ctx.drawImage(video, drawX, drawY, drawW, drawH);
+                }
+                ctx.restore();
+              } catch (err) {
+                console.warn("Local/remote frame compositing failed:", err);
               }
-              
-              // Draw video frame
-              ctx.drawImage(video, drawX, drawY, drawW, drawH);
-              
-              // Subtle name tag banner matching pure-meet styling
-              ctx.fillStyle = 'rgba(15, 15, 20, 0.75)';
+            } else {
+              // Standby Avatar representation
+              ctx.save();
               ctx.beginPath();
-              // Rounded rectangle for banner
-              const bx = x + 15;
-              const by = y + cellHeight - 40;
-              const bw = 180;
-              const bh = 26;
-              const br = 6;
+              ctx.rect(x + 4, y + 4, cellWidth - 8, cellHeight - 8);
+              ctx.clip();
               
-              if (ctx.roundRect) {
-                ctx.roundRect(bx, by, bw, bh, br);
-              } else {
-                ctx.rect(bx, by, bw, bh);
-              }
+              ctx.fillStyle = '#09090B';
+              ctx.fillRect(x + 4, y + 4, cellWidth - 8, cellHeight - 8);
+              
+              const rGlow = Math.min(cellWidth, cellHeight) * 0.4;
+              const grad = ctx.createRadialGradient(x + cellWidth / 2, y + cellHeight / 2, 5, x + cellWidth / 2, y + cellHeight / 2, rGlow);
+              grad.addColorStop(0, 'rgba(16, 185, 129, 0.08)');
+              grad.addColorStop(1, 'rgba(16, 185, 129, 0)');
+              ctx.fillStyle = grad;
+              ctx.fillRect(x + 4, y + 4, cellWidth - 8, cellHeight - 8);
+              
+              const avatarSize = Math.max(30, Math.min(64, Math.min(cellWidth, cellHeight) * 0.25));
+              ctx.beginPath();
+              ctx.arc(x + cellWidth / 2, y + cellHeight / 2, avatarSize, 0, Math.PI * 2);
+              ctx.fillStyle = '#1D1D22';
+              ctx.strokeStyle = 'rgba(255, 255, 255, 0.1)';
+              ctx.lineWidth = 1.5;
               ctx.fill();
+              ctx.stroke();
               
-              ctx.fillStyle = '#FFFFFF';
-              ctx.font = 'bold 12px Inter, system-ui, sans-serif';
-              const isLocalVideo = video === userVideo.current;
-              const label = isLocalVideo ? `${userName} (You)` : `Participant ${index}`;
-              ctx.fillText(label, bx + 12, by + 17);
-            } catch (err) {
-              // Fallback placeholder with standard avatar
-              ctx.fillStyle = '#1A1A1F';
-              ctx.fillRect(x + 5, y + 5, cellWidth - 10, cellHeight - 10);
+              ctx.fillStyle = '#10B981';
+              ctx.font = `bold ${Math.max(10, avatarSize * 0.6)}px Inter, system-ui, sans-serif`;
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              
+              const initials = pName.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase();
+              ctx.fillText(initials, x + cellWidth / 2, y + cellHeight / 2);
+              ctx.restore();
             }
+            
+            // Draw a pristine name layout card at the bottom left
+            ctx.fillStyle = 'rgba(15, 15, 22, 0.85)';
+            ctx.beginPath();
+            const bx = x + 16;
+            const by = y + cellHeight - 42;
+            const bw = Math.min(180, cellWidth - 32);
+            const bh = 26;
+            const br = 6;
+            
+            if (ctx.roundRect) {
+              ctx.roundRect(bx, by, bw, bh, br);
+            } else {
+              ctx.rect(bx, by, bw, bh);
+            }
+            ctx.fill();
+            
+            ctx.fillStyle = '#E4E4E7';
+            ctx.font = 'bold 11px Inter, system-ui, sans-serif';
+            ctx.textAlign = 'left';
+            ctx.textBaseline = 'middle';
+            
+            let displayName = pName;
+            if (displayName.length > 20) {
+              displayName = displayName.substring(0, 18) + '...';
+            }
+            ctx.fillText(displayName, bx + 12, by + 13);
           });
         } else {
-          ctx.fillStyle = '#FFFFFF';
-          ctx.font = '20px sans-serif';
-          ctx.fillText("Waiting for video streams to connect...", canvas.width / 2 - 150, canvas.height / 2);
+          ctx.fillStyle = '#64748B';
+          ctx.font = '16px sans-serif';
+          ctx.fillText("Active Meeting Stage Empty", canvas.width / 2 - 100, canvas.height / 2);
         }
         
         requestAnimationFrame(drawCompositorFrame);
@@ -1029,7 +1089,13 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
             className={`w-full max-w-[1600px] h-full grid gap-3 md:gap-4 auto-rows-fr transition-all duration-500 relative`}
             style={gridTemplate}
           >
-            <div className="relative min-h-[160px] group transition-all">
+            <div 
+              className="relative min-h-[160px] group transition-all"
+              data-participant-card="true"
+              data-peer-id="local"
+              data-name={userName}
+              data-video-off={isVideoOff}
+            >
               <div className={`absolute inset-0 bg-[#1E1E1E] ${squircle} overflow-hidden shadow-sm flex items-center justify-center border border-[#2A2A2A]`}>
                 <video 
                   ref={userVideo} 
@@ -1161,6 +1227,27 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       </div>
 
       <footer className="h-[88px] flex items-center justify-center px-4 shrink-0 w-full bg-gradient-to-t from-[#111111] to-transparent absolute bottom-0 z-20 pb-4 pointer-events-none">
+        <AnimatePresence>
+          {showEmojiPicker && (
+            <motion.div 
+              initial={{ opacity: 0, y: 15, scale: 0.9, x: "-50%" }}
+              animate={{ opacity: 1, y: 0, scale: 1, x: "-50%" }}
+              exit={{ opacity: 0, y: 15, scale: 0.9, x: "-50%" }}
+              className={`absolute bottom-[96px] left-1/2 bg-[#1E1E1E]/95 backdrop-blur-3xl border border-white/10 ${squircle} p-2 flex gap-1.5 shadow-2xl z-50 pointer-events-auto`}
+            >
+              {['👍', '❤️', '😂', '🎉', '👋', '👀'].map(emoji => (
+                <button
+                  key={emoji}
+                  onClick={() => sendReaction(emoji)}
+                  className={`w-10 h-10 sm:w-12 sm:h-12 flex items-center justify-center text-lg sm:text-xl hover:bg-slate-800/80 ${minorSquircle} transition-all hover:scale-110 active:scale-95 text-white`}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
         <div className={`flex items-center gap-1.5 sm:gap-3 bg-[#1A1A1A]/95 backdrop-blur-xl border border-white/10 p-1.5 sm:p-2.5 rounded-[24px] shadow-2xl pointer-events-auto max-w-[96vw] overflow-x-auto scrollbar-none`}>
           <button 
             onClick={toggleMute}
@@ -1210,27 +1297,6 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
             >
               <Smile className="w-4.5 h-4.5 sm:w-5 h-5" />
             </button>
-
-            <AnimatePresence>
-              {showEmojiPicker && (
-                <motion.div 
-                  initial={{ opacity: 0, y: 15, scale: 0.9, x: "-50%" }}
-                  animate={{ opacity: 1, y: 0, scale: 1, x: "-50%" }}
-                  exit={{ opacity: 0, y: 15, scale: 0.9, x: "-50%" }}
-                  className={`absolute bottom-[52px] sm:bottom-[64px] left-1/2 bg-[#1E1E1E]/95 backdrop-blur-3xl border border-white/10 ${squircle} p-2 flex gap-1.5 shadow-2xl z-50 pointer-events-auto`}
-                >
-                  {['👍', '❤️', '😂', '🎉', '👋', '👀'].map(emoji => (
-                    <button
-                      key={emoji}
-                      onClick={() => sendReaction(emoji)}
-                      className={`w-10 h-10 sm:w-12 sm:h-12 flex items-center justify-center text-lg sm:text-xl hover:bg-slate-800/80 ${minorSquircle} transition-all hover:scale-110 active:scale-95 text-white`}
-                    >
-                      {emoji}
-                    </button>
-                  ))}
-                </motion.div>
-              )}
-            </AnimatePresence>
           </div>
 
           <button 
@@ -1310,6 +1376,10 @@ const PeerVideo = ({
       initial={{ opacity: 0, scale: 0.95 }}
       animate={{ opacity: 1, scale: 1 }}
       className="relative min-h-[160px] group transition-all"
+      data-participant-card="true"
+      data-peer-id={peerID}
+      data-name={peerID.includes('pure-meet-room-') ? `Host ${peerID.substring(peerID.length - 5)}` : `Participant ${peerID.substring(peerID.length - 5)}`}
+      data-video-off={!hasVideo}
     >
       <div className={`absolute inset-0 bg-[#1E1E1E] ${squircle} overflow-hidden border border-[#2A2A2A] flex items-center justify-center shadow-sm`}>
         {hasVideo ? (
