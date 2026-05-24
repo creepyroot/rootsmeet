@@ -1,20 +1,14 @@
-import React, { useEffect, useRef, useState } from 'react';
-import io, { Socket } from 'socket.io-client';
-import { Mic, MicOff, Video as VidIcon, VideoOff, PhoneOff, MonitorUp, Users, Copy, Check, MessageSquare, X, Send, Hand, Smile, Shield, ShieldOff, UserX, FileUp, Download } from 'lucide-react';
+import React, { useEffect, useRef, useState, useCallback } from 'react';
+import Peer, { MediaConnection, DataConnection } from 'peerjs';
+import { Mic, MicOff, Video as VidIcon, VideoOff, PhoneOff, MonitorUp, Users, Copy, Check, MessageSquare, X, Send, Hand, Smile, Shield, ShieldOff, UserX, FileUp, Download, MicOff as MicOffAdmin, VideoOff as VideoOffAdmin, Disc2, Subtitles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface RoomScreenProps {
   roomId: string;
   userName?: string;
   onLeave: () => void;
+  initialMedia?: { mic: boolean, video: boolean };
 }
-
-const ICE_SERVERS = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
-  ]
-};
 
 interface ChatMessage {
   id: string;
@@ -38,18 +32,34 @@ interface Reaction {
   emoji: string;
 }
 
-export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: RoomScreenProps) {
-  const [peers, setPeers] = useState<{ id: string, stream: MediaStream }[]>([]);
-  const socketRef = useRef<Socket | null>(null);
+interface Transcription {
+  id: string;
+  senderName: string;
+  text: string;
+  timestamp: number;
+}
+
+export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initialMedia }: RoomScreenProps) {
+  const [peers, setPeers] = useState<{ id: string, stream: MediaStream, name?: string }[]>([]);
+  const peerRef = useRef<Peer | null>(null);
+  const dataConnections = useRef<Map<string, DataConnection>>(new Map());
+  const mediaConnections = useRef<Map<string, MediaConnection>>(new Map());
+  
   const userVideo = useRef<HTMLVideoElement>(null);
-  const peersRef = useRef<{ [id: string]: RTCPeerConnection }>({});
   const streamRef = useRef<MediaStream | null>(null);
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const candidateQueue = useRef<{ [id: string]: RTCIceCandidateInit[] }>({});
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   
-  const [isMuted, setIsMuted] = useState(false);
-  const [isVideoOff, setIsVideoOff] = useState(false);
+  const [isHost, setIsHost] = useState(false);
+  const [isReady, setIsReady] = useState(false);
+  
+  const [isMuted, setIsMuted] = useState(initialMedia ? !initialMedia.mic : false);
+  const [isVideoOff, setIsVideoOff] = useState(initialMedia ? !initialMedia.video : false);
   const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [showCaptions, setShowCaptions] = useState(true);
+  const [transcriptions, setTranscriptions] = useState<Transcription[]>([]);
+  const recognitionRef = useRef<any>(null);
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -63,7 +73,6 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
   const [reactions, setReactions] = useState<Reaction[]>([]);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   
-  const [adminId, setAdminId] = useState<string | null>(null);
   const [activeUploads, setActiveUploads] = useState<Record<string, number>>({});
   const filesRef = useRef<Record<string, { name: string, total: number, received: number, chunks: any[], complete: boolean, url?: string }>>({});
 
@@ -73,267 +82,293 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
     showChatRef.current = showChat;
   }, [showChat]);
 
-  useEffect(() => {
-    socketRef.current = io("/", { path: '/socket.io' });
-
-    const initMedia = async () => {
-      let stream: MediaStream | null = null;
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: { height: 720, width: 1280 }, audio: true });
-      } catch (err) {
-        console.warn("Video+Audio failed, trying audio only", err);
-        try {
-          stream = await navigator.mediaDevices.getUserMedia({ video: false, audio: true });
-          setIsVideoOff(true);
-        } catch (err2) {
-          console.warn("Audio also failed, starting without media", err2);
-          setIsVideoOff(true);
-          setIsMuted(true);
+  // Handle incoming data messages
+  const handleDataMessage = useCallback((senderId: string, data: any) => {
+    if (data.type === 'peer-list' && isHost === false) {
+      // Connect to other peers in the room
+      const existingPeers = data.peers as string[];
+      existingPeers.forEach(peerId => {
+        if (peerId !== peerRef.current?.id && !mediaConnections.current.has(peerId)) {
+          connectToPeer(peerId, streamRef.current);
+        }
+      });
+    } else if (data.type === 'chat') {
+      setMessages(prev => {
+        if (prev.find(p => p.id === data.payload.id)) return prev;
+        return [...prev, { ...data.payload, isSelf: false }];
+      });
+      if (!showChatRef.current) {
+        setUnreadCount(prev => prev + 1);
+      }
+    } else if (data.type === 'file-start') {
+      filesRef.current[data.payload.fileId] = {
+        name: data.payload.fileName, total: data.payload.fileSize, received: 0, chunks: [], complete: false
+      };
+      setMessages(prev => [...prev, {
+        id: data.payload.fileId, sender: data.payload.sender, senderName: data.payload.senderName,
+        message: `Sent a file: ${data.payload.fileName}`, timestamp: Date.now(), isSelf: false, isFile: true,
+        fileData: { id: data.payload.fileId, name: data.payload.fileName, progress: 0 }
+      }]);
+    } else if (data.type === 'file-chunk') {
+      const file = filesRef.current[data.payload.fileId];
+      if (file && !file.complete) {
+        file.chunks.push(data.payload.data);
+        file.received += data.payload.data.byteLength || data.payload.data.length;
+        const progress = Math.min(100, Math.floor((file.received / file.total) * 100));
+        setMessages(prev => prev.map(m => {
+          if (m.id === data.payload.fileId && m.fileData) return { ...m, fileData: { ...m.fileData, progress }};
+          return m;
+        }));
+        if (file.received >= file.total) {
+          file.complete = true;
+          const blob = new Blob(file.chunks);
+          const url = URL.createObjectURL(blob);
+          file.url = url;
+          setMessages(prev => prev.map(m => {
+            if (m.id === data.payload.fileId && m.fileData) return { ...m, fileData: { ...m.fileData, url, progress: 100 }};
+            return m;
+          }));
         }
       }
+    } else if (data.type === 'raise-hand') {
+      setRaisedHands(prev => {
+        const newSet = new Set(prev);
+        if (data.payload.isRaised) newSet.add(senderId);
+        else newSet.delete(senderId);
+        return newSet;
+      });
+    } else if (data.type === 'reaction') {
+      const reactionId = Math.random().toString();
+      setReactions(prev => [...prev, { id: reactionId, userId: senderId, emoji: data.payload.emoji }]);
+      setTimeout(() => setReactions(prev => prev.filter(r => r.id !== reactionId)), 3000);
+    } else if (data.type === 'transcription') {
+      setTranscriptions(prev => {
+        const next = [...prev, data.payload];
+        return next.slice(-Math.max(next.length, 5));
+      });
+      setTimeout(() => setTranscriptions(prev => prev.filter(t => t.id !== data.payload.id)), 8000);
+    } else if (data.type === 'force-mute') {
+      if (streamRef.current) {
+        streamRef.current.getAudioTracks().forEach(t => t.enabled = false);
+        setIsMuted(true);
+      }
+    } else if (data.type === 'force-video-off') {
+      if (streamRef.current) {
+        streamRef.current.getVideoTracks().forEach(t => t.enabled = false);
+        setIsVideoOff(true);
+      }
+    }
+  }, [isHost]);
+
+  const broadcastData = (type: string, payload: any) => {
+    const message = { type, payload };
+    dataConnections.current.forEach(conn => {
+      if (conn.open) conn.send(message);
+    });
+  };
+
+  const setupDataConnection = useCallback((conn: DataConnection) => {
+    conn.on('open', () => {
+      if (isHost && peerRef.current) {
+        // Send list of all existing peers to new joiner
+        const peerList = Array.from(mediaConnections.current.keys()).filter(id => id !== conn.peer);
+        conn.send({ type: 'peer-list', peers: peerList });
+      }
+    });
+    conn.on('data', (data: any) => {
+      handleDataMessage(conn.peer, data);
+    });
+    conn.on('close', () => {
+      dataConnections.current.delete(conn.peer);
+    });
+  }, [isHost, handleDataMessage]);
+
+  const connectToPeer = useCallback((peerId: string, stream: MediaStream | null) => {
+    if (!peerRef.current) return;
+    
+    // Connect Data
+    if (!dataConnections.current.has(peerId)) {
+      const dataConn = peerRef.current.connect(peerId);
+      dataConnections.current.set(peerId, dataConn);
+      setupDataConnection(dataConn);
+    }
+    
+    // Connect Media
+    if (stream && !mediaConnections.current.has(peerId)) {
+       const call = peerRef.current.call(peerId, stream);
+       mediaConnections.current.set(peerId, call);
+       
+       call.on('stream', (userVideoStream) => {
+         setPeers(prev => {
+           if (prev.find(p => p.id === peerId)) return prev;
+           return [...prev, { id: peerId, stream: userVideoStream }];
+         });
+       });
+       
+       call.on('close', () => {
+         mediaConnections.current.delete(peerId);
+         setPeers(prev => prev.filter(p => p.id !== peerId));
+       });
+    }
+  }, [setupDataConnection]);
+
+  useEffect(() => {
+    let currentPeer: Peer | null = null;
+    let cancelled = false;
+
+    const initMediaAndPeer = async () => {
+      let stream: MediaStream | null = null;
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          video: initialMedia?.video !== false ? { height: 720, width: 1280 } : false, 
+          audio: true 
+        });
+        if (initialMedia?.mic === false) {
+          stream.getAudioTracks().forEach(t => t.enabled = false);
+        }
+      } catch (err) {
+        console.warn("Media failed", err);
+        stream = new MediaStream(); // Dummy stream if all fails
+        setIsVideoOff(true);
+        setIsMuted(true);
+      }
+
+      if (cancelled) return;
 
       streamRef.current = stream;
       setLocalStream(stream);
-      if (stream && userVideo.current) {
+      if (userVideo.current) {
         userVideo.current.srcObject = stream;
       }
+
+      const roomPeerId = `pure-meet-room-${roomId}`;
       
-      socketRef.current!.emit("join-room", roomId);
-
-      const setupSocketListeners = () => {
-        socketRef.current!.on("banned", () => {
-          alert("You have been removed from this meeting.");
-          onLeave();
-        });
-
-        socketRef.current!.on("admin-status", (id: string) => {
-          setAdminId(id);
-        });
-
-        socketRef.current!.on("user-connected", async (userId: string) => {
-          const peer = createPeerConnection(userId, streamRef.current);
-          peersRef.current[userId] = peer;
+      const setupPeerHandlers = (p: Peer) => {
+        p.on('open', (id) => {
+          setIsReady(true);
           
-          try {
-            const offer = await peer.createOffer();
-            await peer.setLocalDescription(offer);
-            socketRef.current!.emit("offer", { target: userId, sdp: peer.localDescription });
-          } catch (e) {
-            console.error(e);
+          if (id !== roomPeerId) {
+            // We are guest, connect to host
+            connectToPeer(roomPeerId, stream);
           }
         });
 
-        socketRef.current!.on("offer", async (payload: { caller: string, sdp: RTCSessionDescriptionInit }) => {
-          let peer = peersRef.current[payload.caller];
-          if (!peer) {
-            peer = createPeerConnection(payload.caller, streamRef.current);
-            peersRef.current[payload.caller] = peer;
-          }
-          
-          await peer.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-          const answer = await peer.createAnswer();
-          await peer.setLocalDescription(answer);
-          socketRef.current!.emit("answer", { target: payload.caller, sdp: peer.localDescription });
-          
-          processQueuedCandidates(payload.caller, peer);
+        p.on('connection', (conn) => {
+          dataConnections.current.set(conn.peer, conn);
+          setupDataConnection(conn);
         });
 
-        socketRef.current!.on("answer", async (payload: { caller: string, sdp: RTCSessionDescriptionInit }) => {
-          const peer = peersRef.current[payload.caller];
-          if (peer) {
-            await peer.setRemoteDescription(new RTCSessionDescription(payload.sdp));
-            processQueuedCandidates(payload.caller, peer);
-          }
-        });
-
-        socketRef.current!.on("ice-candidate", async (payload: { caller: string, candidate: RTCIceCandidateInit }) => {
-          const peer = peersRef.current[payload.caller];
-          if (peer && peer.remoteDescription && peer.remoteDescription.type) {
-            try {
-              await peer.addIceCandidate(new RTCIceCandidate(payload.candidate));
-            } catch (e) {
-              console.error(e);
-            }
-          } else {
-            if (!candidateQueue.current[payload.caller]) {
-              candidateQueue.current[payload.caller] = [];
-            }
-            candidateQueue.current[payload.caller].push(payload.candidate);
-          }
-        });
-
-        socketRef.current!.on("user-disconnected", (userId: string) => {
-          if (peersRef.current[userId]) {
-            peersRef.current[userId].close();
-            delete peersRef.current[userId];
-          }
-          setPeers(prev => prev.filter(p => p.id !== userId));
-        });
-
-        socketRef.current!.on("chat-message", (payload: any) => {
-          if (payload.id) {
-             setMessages(prev => {
-                if (prev.find(p => p.id === payload.id)) return prev;
-                return [...prev, {
-                  id: payload.id,
-                  sender: payload.sender,
-                  senderName: payload.senderName || 'Guest',
-                  message: payload.message,
-                  timestamp: payload.timestamp,
-                  isSelf: payload.sender === socketRef.current?.id
-                }];
-             });
-          }
-          if (!showChatRef.current && payload.sender !== socketRef.current?.id) {
-            setUnreadCount(prev => prev + 1);
-          }
-        });
-
-        socketRef.current!.on("file-start", (payload: any) => {
-          filesRef.current[payload.fileId] = {
-            name: payload.fileName,
-            total: payload.fileSize,
-            received: 0,
-            chunks: [],
-            complete: false
-          };
-          setMessages(prev => [...prev, {
-            id: payload.fileId,
-            sender: payload.sender,
-            senderName: payload.senderName || 'Guest',
-            message: `Sent a file: ${payload.fileName}`,
-            timestamp: Date.now(),
-            isSelf: payload.sender === socketRef.current?.id,
-            isFile: true,
-            fileData: { id: payload.fileId, name: payload.fileName, progress: 0 }
-          }]);
-        });
-
-        socketRef.current!.on("file-chunk", (payload: any) => {
-          const file = filesRef.current[payload.fileId];
-          if (file && !file.complete) {
-            file.chunks.push(payload.data);
-            file.received += payload.data.byteLength || payload.data.length;
-            const progress = Math.min(100, Math.floor((file.received / file.total) * 100));
-            
-            setMessages(prev => prev.map(m => {
-              if (m.id === payload.fileId && m.fileData) {
-                return { ...m, fileData: { ...m.fileData, progress }};
-              }
-              return m;
-            }));
-
-            if (file.received >= file.total) {
-              file.complete = true;
-              const blob = new Blob(file.chunks);
-              const url = URL.createObjectURL(blob);
-              file.url = url;
-              setMessages(prev => prev.map(m => {
-                if (m.id === payload.fileId && m.fileData) {
-                  return { ...m, fileData: { ...m.fileData, url, progress: 100 }};
-                }
-                return m;
-              }));
-            }
-          }
-        });
-
-        socketRef.current!.on("raise-hand", (payload: { userId: string, isRaised: boolean }) => {
-          setRaisedHands(prev => {
-            const newSet = new Set(prev);
-            if (payload.isRaised) newSet.add(payload.userId);
-            else newSet.delete(payload.userId);
-            return newSet;
+        p.on('call', (call) => {
+          mediaConnections.current.set(call.peer, call);
+          call.answer(streamRef.current || undefined);
+          call.on('stream', (userVideoStream) => {
+            setPeers(prev => {
+              if (prev.find(peer => peer.id === call.peer)) return prev;
+              return [...prev, { id: call.peer, stream: userVideoStream }];
+            });
+          });
+          call.on('close', () => {
+             mediaConnections.current.delete(call.peer);
+             setPeers(prev => prev.filter(peer => peer.id !== call.peer));
           });
         });
-
-        socketRef.current!.on("reaction", (payload: { userId: string, emoji: string }) => {
-          const reactionId = Math.random().toString();
-          setReactions(prev => [...prev, { id: reactionId, userId: payload.userId, emoji: payload.emoji }]);
-          setTimeout(() => {
-            setReactions(prev => prev.filter(r => r.id !== reactionId));
-          }, 3000);
+        
+        p.on('disconnected', () => {
+          if (!p.destroyed) p.reconnect()
         });
       };
 
-      setupSocketListeners();
+      // Try forming as Host
+      const tryHost = new Peer(roomPeerId, {
+        config: {'iceServers': [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }]}
+      });
+
+      tryHost.on('open', (id) => {
+        if (cancelled) return;
+        setIsHost(true);
+        peerRef.current = tryHost;
+        setupPeerHandlers(tryHost);
+      });
+
+      tryHost.on('error', (err) => {
+        if (cancelled) return;
+        if (err.type === 'unavailable-id') {
+          // Room exists, join as guest
+          const guestPeer = new Peer({
+            config: {'iceServers': [{ urls: 'stun:stun.l.google.com:19302' }, { urls: 'stun:stun1.l.google.com:19302' }]}
+          });
+          setIsHost(false);
+          peerRef.current = guestPeer;
+          setupPeerHandlers(guestPeer);
+        } else {
+          console.error("PeerJS Error:", err);
+        }
+      });
+
+      currentPeer = tryHost;
     };
 
-    initMedia();
+    initMediaAndPeer();
+
+    // Setup Speech Recognition
+    const SpeechRecognition = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (SpeechRecognition) {
+      const recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.onresult = (event: any) => {
+        const last = event.results.length - 1;
+        const text = event.results[last][0].transcript;
+        if (text.trim() && peerRef.current) {
+          const payload = { id: Math.random().toString(36), senderName: userName, text: text.trim(), timestamp: Date.now() };
+          broadcastData('transcription', payload);
+          setTranscriptions(prev => {
+            const next = [...prev, payload];
+            return next.slice(-Math.max(next.length, 5));
+          });
+          setTimeout(() => setTranscriptions(prev => prev.filter(t => t.id !== payload.id)), 8000);
+        }
+      };
+      recognitionRef.current = recognition;
+    }
 
     return () => {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
+      cancelled = true;
+      if (streamRef.current) streamRef.current.getTracks().forEach(t => t.stop());
+      if (recognitionRef.current) {
+        try { recognitionRef.current.stop(); } catch(e) {}
       }
-      Object.values(peersRef.current).forEach(peer => peer.close());
-      socketRef.current?.disconnect();
+      if (peerRef.current) {
+        peerRef.current.destroy();
+      }
+      // close all connections
+      mediaConnections.current.forEach(c => c.close());
+      dataConnections.current.forEach(c => c.close());
     };
-  }, [roomId, onLeave]);
+  }, [roomId, userName, connectToPeer, setupDataConnection]);
+
+  useEffect(() => {
+    if (recognitionRef.current && isReady) {
+      if (!isMuted) {
+        try { recognitionRef.current.start(); } catch (e) {}
+      } else {
+        try { recognitionRef.current.stop(); } catch (e) {}
+      }
+    }
+  }, [isMuted, isReady]);
 
   useEffect(() => {
     if (showChat) {
       setUnreadCount(0);
       if (chatScrollRef.current) {
-        chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+         requestAnimationFrame(() => {
+           if (chatScrollRef.current) {
+             chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+           }
+         });
       }
     }
   }, [messages, showChat]);
-
-  const processQueuedCandidates = async (caller: string, peer: RTCPeerConnection) => {
-    if (candidateQueue.current[caller]) {
-      for (const candidate of candidateQueue.current[caller]) {
-        try {
-          await peer.addIceCandidate(new RTCIceCandidate(candidate));
-        } catch (e) {
-          console.error(e);
-        }
-      }
-      delete candidateQueue.current[caller];
-    }
-  };
-
-  const handleNegotiationNeededEvent = async (peer: RTCPeerConnection, userId: string) => {
-    try {
-      const offer = await peer.createOffer();
-      await peer.setLocalDescription(offer);
-      socketRef.current!.emit("offer", { target: userId, sdp: peer.localDescription });
-    } catch (e) {
-      console.error(e);
-    }
-  };
-
-  function createPeerConnection(userId: string, stream: MediaStream | null) {
-    const peer = new RTCPeerConnection(ICE_SERVERS);
-    
-    if (stream) {
-      stream.getTracks().forEach(track => {
-        peer.addTrack(track, stream);
-      });
-    }
-
-    peer.onnegotiationneeded = () => handleNegotiationNeededEvent(peer, userId);
-
-    peer.onicecandidate = (event) => {
-      if (event.candidate && socketRef.current) {
-        socketRef.current.emit("ice-candidate", {
-          target: userId,
-          candidate: event.candidate,
-        });
-      }
-    };
-
-    peer.ontrack = (event) => {
-      setPeers(prev => {
-        const existing = prev.find(p => p.id === userId);
-        if (existing) {
-          return prev.map(p => p.id === userId ? { ...p, stream: event.streams[0] } : p);
-        }
-        return [...prev, { id: userId, stream: event.streams[0] }];
-      });
-    };
-
-    return peer;
-  }
 
   const toggleMute = () => {
     if (streamRef.current) {
@@ -361,27 +396,22 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
         const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true } as any);
         const screenTrack = screenStream.getVideoTracks()[0];
         
-        Object.keys(peersRef.current).forEach(userId => {
-          const peer = peersRef.current[userId];
-          const sender = peer.getSenders().find(s => s.track && s.track.kind === 'video');
+        mediaConnections.current.forEach(call => {
+          const sender = call.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
           if (sender) {
             sender.replaceTrack(screenTrack);
-          } else {
-            peer.addTrack(screenTrack, streamRef.current || new MediaStream());
           }
         });
 
-        screenTrack.onended = () => {
-          stopScreenShare();
-        };
-
-        if (userVideo.current) {
-          userVideo.current.srcObject = screenStream;
-        }
+        screenTrack.onended = () => stopScreenShare();
+        if (userVideo.current) userVideo.current.srcObject = screenStream;
         setIsScreenSharing(true);
-      } catch (err) {
-        console.error("Screen sharing failed", err);
-        alert("Could not share screen. Please ensure permissions are granted and try opening the app in a new tab if you are using an iframe.");
+      } catch (err: any) {
+        if (err.name === 'NotAllowedError' || err.message?.includes('current context')) {
+          alert('Screen sharing is blocked in this preview window.\n\nPlease open the application in a new tab (using the ↗ icon at the top right) to use Screen Sharing.');
+        } else {
+          alert(`Failed to start screen sharing: ${err.message}`);
+        }
       }
     } else {
       stopScreenShare();
@@ -391,89 +421,119 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
   const stopScreenShare = () => {
     if (streamRef.current) {
       const videoTrack = streamRef.current.getVideoTracks()[0];
-      Object.keys(peersRef.current).forEach(userId => {
-        const peer = peersRef.current[userId];
-        const sender = peer.getSenders().find(s => s.track && s.track.kind === 'video');
+      mediaConnections.current.forEach(call => {
+        const sender = call.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
         if (sender && videoTrack) {
           sender.replaceTrack(videoTrack).catch(console.error);
         }
       });
-      if (userVideo.current) {
-        userVideo.current.srcObject = streamRef.current;
-      }
+      if (userVideo.current) userVideo.current.srcObject = streamRef.current;
     }
     setIsScreenSharing(false);
   };
 
+  const toggleRecording = async () => {
+    if (isRecording) {
+      mediaRecorderRef.current?.stop();
+      setIsRecording(false);
+      return;
+    }
+    try {
+      let streamToRecord: MediaStream;
+      try {
+        streamToRecord = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true } as any);
+      } catch (e) {
+        streamToRecord = await navigator.mediaDevices.getDisplayMedia({ video: true } as any);
+      }
+      const recorder = new MediaRecorder(streamToRecord);
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+      recorder.onstop = () => {
+        const url = URL.createObjectURL(new Blob(chunks, { type: 'video/webm' }));
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `Meeting_Recording_${new Date().getTime()}.webm`;
+        a.click();
+        streamToRecord.getTracks().forEach(t => t.stop());
+      };
+      recorder.start(1000);
+      mediaRecorderRef.current = recorder;
+      setIsRecording(true);
+    } catch (err: any) {
+      if (err.name === 'NotAllowedError' || err.message?.includes('current context')) {
+        alert('Screen recording is blocked in this preview window.\n\nPlease open the application in a new tab (using the ↗ icon at the top right) to use Screen Recording.');
+      } else {
+        alert(`Failed to start recording: ${err.message}`);
+      }
+    }
+  };
+
   const toggleHandRaise = () => {
-    if (!socketRef.current) return;
     const newRaised = !handRaised;
     setHandRaised(newRaised);
-    socketRef.current.emit('raise-hand', { room: roomId, isRaised: newRaised });
+    broadcastData('raise-hand', { isRaised: newRaised });
   };
 
   const sendReaction = (emoji: string) => {
-    if (!socketRef.current) return;
-    socketRef.current.emit('reaction', { room: roomId, emoji });
+    broadcastData('reaction', { emoji });
     setShowEmojiPicker(false);
   };
 
   const sendChatMessage = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!chatInput.trim() || !socketRef.current) return;
+    if (!chatInput.trim() || !peerRef.current) return;
     
-    socketRef.current.emit('chat-message', {
-      room: roomId,
+    const payload = {
+      id: Math.random().toString(36),
+      sender: peerRef.current.id,
+      senderName: userName,
       message: chatInput.trim(),
-      senderName: userName
-    });
+      timestamp: Date.now()
+    };
+    
+    setMessages(prev => [...prev, { ...payload, isSelf: true }]);
+    broadcastData('chat', payload);
     setChatInput('');
   };
 
   const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (!file || !socketRef.current) return;
+    if (!file || !peerRef.current) return;
 
     const fileId = Math.random().toString(36);
-    const chunkSize = 1000 * 1024; // 1MB chunks
+    const chunkSize = 200 * 1024; // 200KB chunks for DataChannel
     
-    socketRef.current.emit('file-start', {
-      room: roomId,
-      fileId,
-      fileName: file.name,
-      fileSize: file.size,
-      senderName: userName
-    });
+    const startPayload = { fileId, fileName: file.name, fileSize: file.size, sender: peerRef.current.id, senderName: userName };
+    broadcastData('file-start', startPayload);
+    
+    setMessages(prev => [...prev, {
+      id: fileId, sender: peerRef.current.id, senderName: userName,
+      message: `Sent a file: ${file.name}`, timestamp: Date.now(), isSelf: true, isFile: true,
+      fileData: { id: fileId, name: file.name, progress: 0 }
+    }]);
 
     let offset = 0;
-    
     const readNextChunk = () => {
-      const reader = new FileReader();
       const slice = file.slice(offset, offset + chunkSize);
-      
-      reader.onload = (e) => {
-        if (!e.target?.result || !socketRef.current) return;
-        socketRef.current.emit('file-chunk', {
-          room: roomId,
-          fileId,
-          data: e.target.result
-        });
-        
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        if (!ev.target?.result) return;
+        broadcastData('file-chunk', { fileId, data: ev.target.result });
         offset += chunkSize;
         const progress = Math.min(100, Math.floor((offset / file.size) * 100));
         setActiveUploads(prev => ({ ...prev, [fileId]: progress }));
         
+        setMessages(prev => prev.map(m => {
+          if (m.id === fileId && m.fileData) return { ...m, fileData: { ...m.fileData, progress }};
+          return m;
+        }));
+        
         if (offset < file.size) {
           setTimeout(readNextChunk, 20);
         } else {
-           setActiveUploads(prev => {
-             const newObj = { ...prev };
-             delete newObj[fileId];
-             return newObj;
-           });
+           setActiveUploads(prev => { const n = {...prev}; delete n[fileId]; return n; });
         }
       };
-      
       reader.readAsArrayBuffer(slice);
     };
 
@@ -481,15 +541,15 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
     if (fileInputRef.current) fileInputRef.current.value = '';
   };
 
-  const banUser = (userId: string) => {
-    if (window.confirm("Are you sure you want to remove this user?")) {
-      socketRef.current?.emit("ban-user", { targetUserId: userId });
+  const muteAll = () => {
+    if (window.confirm("Mute everyone else in the meeting?")) {
+      broadcastData('force-mute', {});
     }
   };
 
-  const makeAdmin = (userId: string) => {
-    if (window.confirm("Transfer admin rights to this user? You will lose admin privileges.")) {
-      socketRef.current?.emit("transfer-admin", { targetUserId: userId });
+  const videoOffAll = () => {
+    if (window.confirm("Turn off everyone else's camera?")) {
+      broadcastData('force-video-off', {});
     }
   };
 
@@ -501,21 +561,29 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const participantCount = peers.length + 1;
-  const gridCols = participantCount === 1 ? 'grid-cols-1' :
-                   participantCount === 2 ? 'grid-cols-1 sm:grid-cols-2' :
-                   participantCount <= 4 ? 'grid-cols-2' :
-                   participantCount <= 6 ? 'grid-cols-2 md:grid-cols-3' :
-                   'grid-cols-3 md:grid-cols-4';
-
   let formatTime = (ts: number) => {
     const d = new Date(ts);
     return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
   }
 
-  const isAdmin = adminId === socketRef.current?.id;
   const squircle = "rounded-[24px]";
   const minorSquircle = "rounded-[20px]";
+
+  const participantCount = peers.length + 1;
+  const gridTemplate = participantCount === 1 
+    ? { gridTemplateColumns: '1fr', gridTemplateRows: '1fr' }
+    : participantCount === 2
+    ? { gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }
+    : { gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' };
+
+  if (!isReady) {
+    return <div className="h-full w-full bg-[#111111] flex items-center justify-center text-white">
+      <div className="flex flex-col items-center gap-4">
+        <div className="w-8 h-8 rounded-full border-2 border-emerald-500 border-t-transparent animate-spin"></div>
+        <p className="font-medium tracking-wide">Connecting to P2P Network...</p>
+      </div>
+    </div>
+  }
 
   return (
     <div className="h-full w-full bg-[#111111] flex flex-col font-sans relative overflow-hidden">
@@ -527,13 +595,26 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
             </div>
             <h2 className="font-semibold text-[15px] hidden sm:block tracking-wide">Meeting <span className="text-slate-400 font-normal ml-2">{roomId}</span></h2>
           </div>
+          {isRecording && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1 bg-red-500/10 text-red-500 rounded-full border border-red-500/20 text-xs font-semibold animate-pulse">
+              <div className="w-2 h-2 rounded-full bg-red-500"></div> Recording
+            </div>
+          )}
         </div>
         <div className="flex items-center gap-3">
-          {isAdmin && (
-            <div className={`hidden sm:flex items-center gap-1.5 text-xs px-3 py-1.5 bg-amber-500/10 text-amber-500 ${minorSquircle} font-medium border border-amber-500/20`}>
-              <Shield className="w-3.5 h-3.5" />
-              Admin
-            </div>
+          {isHost && (
+            <>
+              <div className={`hidden sm:flex items-center gap-1.5 text-xs px-3 py-1.5 bg-amber-500/10 text-amber-500 ${minorSquircle} font-medium border border-amber-500/20 mr-2`}>
+                <Shield className="w-3.5 h-3.5" />
+                Host
+              </div>
+              <button onClick={muteAll} className={`hidden md:flex items-center gap-1.5 text-xs px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 ${minorSquircle} text-slate-200`} title="Mute All">
+                <MicOffAdmin className="w-3.5 h-3.5 text-amber-400" /> <span className="hidden lg:inline">Mute All</span>
+              </button>
+              <button onClick={videoOffAll} className={`hidden md:flex items-center gap-1.5 text-xs px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 ${minorSquircle} text-slate-200`} title="Video Off All">
+                <VideoOffAdmin className="w-3.5 h-3.5 text-amber-400" /> <span className="hidden lg:inline">Stop Video All</span>
+              </button>
+            </>
           )}
           <button 
             onClick={copyUrl}
@@ -562,8 +643,11 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
       </header>
 
       <div className="flex-1 flex overflow-hidden relative">
-        <main className={`flex-1 p-3 md:p-6 flex items-center justify-center overflow-hidden transition-all duration-300 ${showChat ? 'md:pr-[340px]' : ''}`}>
-          <div className={`w-full max-w-[1600px] h-full grid ${gridCols} gap-3 md:gap-4 auto-rows-fr`}>
+        <main className={`flex-1 p-3 md:p-6 flex items-center justify-center overflow-hidden transition-all duration-500 ease-in-out ${showChat ? 'md:pr-[40vw] lg:pr-[30vw]' : ''}`}>
+          <div 
+            className={`w-full max-w-[1600px] h-full grid gap-3 md:gap-4 auto-rows-fr transition-all duration-500 relative`}
+            style={gridTemplate}
+          >
             <div className={`relative bg-[#1E1E1E] ${squircle} overflow-hidden shadow-sm flex items-center justify-center min-h-[160px] border border-[#2A2A2A] transition-all`}>
               <video 
                 ref={userVideo} 
@@ -598,7 +682,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
 
               <div className="absolute inset-0 pointer-events-none overflow-hidden">
                 <AnimatePresence>
-                  {reactions.filter(r => r.userId === socketRef.current?.id).map(r => (
+                  {reactions.filter(r => r.userId === peerRef.current?.id).map(r => (
                     <motion.div
                       key={r.id}
                       initial={{ y: 50, opacity: 0, scale: 0.5 }}
@@ -621,14 +705,28 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
                 peerID={peer.id} 
                 isHandRaised={raisedHands.has(peer.id)}
                 peerReactions={reactions.filter(r => r.userId === peer.id)}
-                isAdmin={adminId === peer.id}
-                iAmAdmin={isAdmin}
-                onBan={() => banUser(peer.id)}
-                onMakeAdmin={() => makeAdmin(peer.id)}
               />
             ))}
           </div>
         </main>
+
+        <AnimatePresence>
+          {showCaptions && transcriptions.length > 0 && (
+            <motion.div 
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: 20 }}
+              className={`absolute bottom-24 left-6 right-6 md:left-[10%] md:right-[10%] pointer-events-none z-10 flex flex-col items-center gap-2 ${showChat ? 'md:right-[calc(40vw+10%)] lg:right-[calc(30vw+10%)]' : ''}`}
+            >
+              {transcriptions.map(t => (
+                <div key={t.id} className={`bg-black/70 backdrop-blur-md px-4 py-2 ${minorSquircle} text-white max-w-full text-center shadow-lg border border-white/10`}>
+                  <span className="font-semibold text-emerald-400 mr-2 text-xs">{t.senderName}:</span>
+                  <span className="text-sm font-medium">{t.text}</span>
+                </div>
+              ))}
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <AnimatePresence>
           {showChat && (
@@ -636,8 +734,8 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
               initial={{ x: '100%', opacity: 0 }}
               animate={{ x: 0, opacity: 1 }}
               exit={{ x: '100%', opacity: 0 }}
-              transition={{ type: 'spring', damping: 25, stiffness: 200 }}
-              className={`absolute right-0 top-0 bottom-[88px] w-full md:w-[340px] bg-[#171717] border-l border-white/5 flex flex-col z-30 shadow-2xl rounded-tl-[32px]`}
+              transition={{ type: 'spring', damping: 30, stiffness: 200 }}
+              className={`absolute right-0 top-0 bottom-[88px] w-full md:w-[40vw] lg:w-[30vw] bg-[#171717] border-l border-white/5 flex flex-col z-30 shadow-[−20px_0_40px_rgba(0,0,0,0.3)] rounded-tl-[32px] overflow-hidden`}
             >
               <div className="h-14 border-b border-white/5 flex items-center justify-between px-5 shrink-0 bg-[#1A1A1A] rounded-tl-[32px]">
                 <h3 className="text-white font-medium text-sm flex items-center gap-2 tracking-wide">
@@ -648,7 +746,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
                 </button>
               </div>
               
-              <div ref={chatScrollRef} className="flex-1 overflow-y-auto p-5 flex flex-col gap-4 scroll-smooth">
+              <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4 scroll-smooth overflow-x-hidden">
                 {messages.length === 0 ? (
                   <div className="flex-1 flex flex-col items-center justify-center text-slate-500 space-y-3">
                     <div className={`w-12 h-12 ${minorSquircle} bg-slate-800/50 flex items-center justify-center`}>
@@ -661,7 +759,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
                     <div key={msg.id} className={`flex flex-col ${msg.isSelf ? 'items-end' : 'items-start'}`}>
                       <div className="flex items-center gap-2 mb-1.5 px-1">
                         <span className={`text-[10px] font-semibold ${msg.isSelf ? 'text-emerald-400' : 'text-slate-400'}`}>
-                          {msg.isSelf ? 'You' : msg.senderName}
+                          {msg.isSelf ? 'You' : msg.senderName || 'Peer'}
                         </span>
                         <span className="text-[9px] text-slate-600 font-medium">{formatTime(msg.timestamp)}</span>
                       </div>
@@ -669,7 +767,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
                         msg.isSelf 
                           ? 'bg-emerald-600 text-white rounded-tr-sm' 
                           : 'bg-[#222222] text-slate-200 rounded-tl-sm border border-white/5'
-                      }`}>
+                      } break-words`}>
                         {msg.isFile && msg.fileData ? (
                           <div className="flex flex-col gap-2 min-w-[200px]">
                             <div className={`flex items-center gap-2 bg-black/20 p-2 ${minorSquircle}`}>
@@ -702,6 +800,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
                     </div>
                   ))
                 )}
+                <div ref={chatScrollRef} />
               </div>
               
               <div className="p-4 bg-[#1A1A1A] border-t border-white/5">
@@ -719,7 +818,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
                     value={chatInput}
                     onChange={(e) => setChatInput(e.target.value)}
                     placeholder="Message everyone..." 
-                    className={`flex-1 bg-[#222222] border border-white/10 ${minorSquircle} px-4 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-emerald-500/50 focus:bg-[#2A2A2A] transition-all`}
+                    className={`flex-1 bg-[#222222] border border-white/10 ${minorSquircle} px-4 py-2.5 text-sm text-white placeholder:text-slate-500 focus:outline-none focus:border-emerald-500/50 focus:bg-[#2A2A2A] transition-all min-w-0`}
                   />
                   <button 
                     type="submit" 
@@ -764,6 +863,22 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave }: Room
             title="Share Screen"
           >
             <MonitorUp className="w-5 h-5" />
+          </button>
+
+          <button 
+            onClick={() => setShowCaptions(!showCaptions)}
+            className={`w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center ${minorSquircle} transition-all ${showCaptions ? 'bg-blue-600 hover:bg-blue-500 text-white shadow-lg shadow-blue-500/20' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
+            title="Toggle Captions"
+          >
+            <Subtitles className="w-5 h-5" />
+          </button>
+
+          <button 
+            onClick={toggleRecording}
+            className={`w-11 h-11 sm:w-12 sm:h-12 flex items-center justify-center ${minorSquircle} transition-all ${isRecording ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse shadow-lg shadow-red-500/20' : 'bg-slate-800 hover:bg-slate-700 text-white'}`}
+            title="Record Meeting"
+          >
+            <Disc2 className="w-5 h-5" />
           </button>
 
           <div className="relative">
@@ -824,29 +939,21 @@ const PeerVideo = ({
   stream, 
   peerID, 
   isHandRaised, 
-  peerReactions,
-  isAdmin,
-  iAmAdmin,
-  onBan,
-  onMakeAdmin
+  peerReactions
 }: { 
   stream: MediaStream, 
   peerID: string, 
   isHandRaised: boolean, 
-  peerReactions: Reaction[],
-  isAdmin: boolean,
-  iAmAdmin: boolean,
-  onBan: () => void,
-  onMakeAdmin: () => void
+  peerReactions: Reaction[]
 }) => {
   const ref = useRef<HTMLVideoElement>(null);
-  const [showMenu, setShowMenu] = useState(false);
   const squircle = "rounded-[24px]";
   const minorSquircle = "rounded-[20px]";
 
   useEffect(() => {
     if (ref.current) {
       ref.current.srcObject = stream;
+      ref.current.play().catch(e => console.error("Play error:", e));
     }
   }, [stream]);
 
@@ -862,48 +969,10 @@ const PeerVideo = ({
         playsInline 
         className="w-full h-full object-cover" 
       />
-      
-      <div className="absolute top-4 left-4 flex gap-2">
-        {isAdmin && (
-           <div className={`bg-amber-500/80 backdrop-blur px-2 py-1 ${minorSquircle} text-white text-[10px] font-bold tracking-wider uppercase flex items-center gap-1 shadow-lg border border-amber-400/50`}>
-             <Shield className="w-3 h-3" /> Admin
-           </div>
-        )}
-      </div>
 
       <div className={`absolute bottom-4 left-4 bg-black/60 backdrop-blur-xl px-3 py-1.5 flex items-center ${minorSquircle} text-white text-xs font-medium border border-white/10 shadow-lg`}>
-        Participant {peerID.substring(0, 4)}
-        <AudioVisualizer stream={stream} />
+        Participant {peerID.substring(peerID.length - 5)}
       </div>
-      
-      {iAmAdmin && !isAdmin && (
-        <div className="absolute top-4 right-4 opacity-0 group-hover:opacity-100 transition-opacity">
-          <button 
-            onClick={() => setShowMenu(!showMenu)}
-            className={`w-8 h-8 ${minorSquircle} bg-black/60 backdrop-blur text-white flex items-center justify-center hover:bg-slate-800 transition-colors`}
-          >
-            <ShieldOff className="w-4 h-4" />
-          </button>
-          
-          <AnimatePresence>
-            {showMenu && (
-              <motion.div 
-                initial={{ opacity: 0, scale: 0.95 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                className={`absolute top-10 right-0 w-36 bg-[#222222] border border-white/10 ${minorSquircle} shadow-2xl overflow-hidden py-1 z-10`}
-              >
-                <button onClick={() => { onMakeAdmin(); setShowMenu(false); }} className="w-full text-left px-4 py-2.5 text-xs text-white hover:bg-slate-700 transition-colors flex items-center gap-2">
-                  <Shield className="w-3.5 h-3.5" /> Make Admin
-                </button>
-                <button onClick={() => { onBan(); setShowMenu(false); }} className="w-full text-left px-4 py-2.5 text-xs text-red-400 hover:bg-red-500/10 transition-colors flex items-center gap-2 border-t border-white/5">
-                  <UserX className="w-3.5 h-3.5" /> Remove
-                </button>
-              </motion.div>
-            )}
-          </AnimatePresence>
-        </div>
-      )}
 
       <AnimatePresence>
         {isHandRaised && (
@@ -911,7 +980,7 @@ const PeerVideo = ({
             initial={{ scale: 0, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0, opacity: 0 }}
-            className={`absolute ${iAmAdmin && !isAdmin ? 'top-14' : 'top-4'} right-4 w-9 h-9 bg-amber-500 ${minorSquircle} flex items-center justify-center text-white shadow-xl border-2 border-[#1E1E1E]`}
+            className={`absolute top-4 right-4 w-9 h-9 bg-emerald-600 ${minorSquircle} flex items-center justify-center text-white shadow-xl border-2 border-[#1E1E1E]`}
           >
             <Hand className="w-4 h-4" />
           </motion.div>
@@ -939,73 +1008,89 @@ const PeerVideo = ({
 };
 
 const AudioVisualizer = ({ stream }: { stream: MediaStream | null }) => {
-  const [volume, setVolume] = useState(0);
-
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  
   useEffect(() => {
-    if (!stream || stream.getAudioTracks().length === 0) {
-      setVolume(0);
-      return;
-    }
+    if (!stream || !canvasRef.current || !window.AudioContext) return;
     
+    // Check if there are active audio tracks before trying to visualize
+    if (stream.getAudioTracks().length === 0 || !stream.getAudioTracks()[0].enabled) {
+      return; 
+    }
+
     let audioContext: AudioContext;
+    let analyser: AnalyserNode;
+    let source: MediaStreamAudioSourceNode;
+    let animationFrameId: number;
+
     try {
       audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    } catch(e) {
-      return;
-    }
-    
-    const analyser = audioContext.createAnalyser();
-    analyser.fftSize = 256;
-    analyser.smoothingTimeConstant = 0.5;
-    
-    let source;
-    try {
+      analyser = audioContext.createAnalyser();
       source = audioContext.createMediaStreamSource(stream);
       source.connect(analyser);
+      analyser.fftSize = 64;
     } catch (e) {
+      // Stream might have stopped or audio context failed
       return;
     }
 
-    const dataArray = new Uint8Array(analyser.frequencyBinCount);
-    let animationId: number;
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
 
-    const checkVolume = () => {
-      analyser.getByteFrequencyData(dataArray);
-      let sum = 0;
-      const maxBins = Math.floor(dataArray.length / 3); 
-      for (let i = 0; i < maxBins; i++) {
-        sum += dataArray[i];
+    const draw = () => {
+      animationFrameId = requestAnimationFrame(draw);
+      
+      try {
+        analyser.getByteFrequencyData(dataArray);
+      } catch (e) {
+        return;
       }
-      setVolume(sum / maxBins);
-      animationId = requestAnimationFrame(checkVolume);
+
+      if (!ctx || !canvas) return;
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+      const barWidth = 3;
+      const barSpacing = 1;
+      const numBars = 4;
+      const totalWidth = (barWidth + barSpacing) * numBars - barSpacing;
+      
+      const startX = (canvas.width - totalWidth) / 2;
+      
+      for (let i = 0; i < numBars; i++) {
+        // Average chunk
+        const start = Math.floor(i * (bufferLength / numBars));
+        const end = Math.floor((i + 1) * (bufferLength / numBars));
+        let sum = 0;
+        for (let j = start; j < end; j++) {
+          sum += dataArray[j];
+        }
+        const avg = sum / (end - start);
+        
+        // Map 0-255 to 2-12px height
+        const height = 2 + (avg / 255) * 10;
+        
+        ctx.fillStyle = '#10B981'; // emerald-500
+        const x = startX + i * (barWidth + barSpacing);
+        const y = (canvas.height - height) / 2;
+        
+        ctx.beginPath();
+        ctx.roundRect(x, y, barWidth, height, 1.5);
+        ctx.fill();
+      }
     };
 
-    checkVolume();
+    draw();
 
     return () => {
-      cancelAnimationFrame(animationId);
-      source?.disconnect();
-      if (audioContext.state !== 'closed') {
-        audioContext.close().catch(() => {});
+      cancelAnimationFrame(animationFrameId);
+      if (audioContext && audioContext.state !== 'closed') {
+        try { audioContext.close(); } catch(e) {}
       }
     };
   }, [stream]);
 
-  if (!stream) return null;
-
-  return (
-    <div className="flex items-center justify-center gap-[2.5px] h-3.5 ml-2.5 w-6">
-      {[...Array(4)].map((_, i) => {
-        const height = Math.max(3, (volume / 255) * 16 * 1.8 * (Math.random() * 0.4 + 0.6));
-        return (
-          <motion.div
-            key={i}
-            className="w-[3.5px] rounded-full bg-emerald-400"
-            animate={{ height: Math.min(height, 14) }}
-            transition={{ type: 'spring', bounce: 0.6, duration: 0.15 }}
-          />
-        );
-      })}
-    </div>
-  );
+  return <canvas ref={canvasRef} width={24} height={16} className="ml-2 block" />;
 };
