@@ -262,20 +262,28 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
 
         // Try 1: Try both mic and video (with ideal video spec)
         try {
-          return await navigator.mediaDevices.getUserMedia({
+          const s = await navigator.mediaDevices.getUserMedia({
             video: videoConstraint,
             audio: initialMedia?.mic !== false
           });
+          if (cancelled) {
+            s.getTracks().forEach(t => t.stop());
+          }
+          return s;
         } catch (e) {
           console.warn("Try 1 failed (both ideal):", e);
         }
 
         // Try 2: Try both mic and video (standard/simple video spec)
         try {
-          return await navigator.mediaDevices.getUserMedia({
+          const s = await navigator.mediaDevices.getUserMedia({
             video: initialMedia?.video !== false,
             audio: initialMedia?.mic !== false
           });
+          if (cancelled) {
+            s.getTracks().forEach(t => t.stop());
+          }
+          return s;
         } catch (e) {
           console.warn("Try 2 failed (both simple):", e);
         }
@@ -287,6 +295,9 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
               video: videoConstraint,
               audio: false
             });
+            if (cancelled) {
+              vs.getTracks().forEach(t => t.stop());
+            }
             setIsMuted(true); // Since mic failed or is disabled
             return vs;
           } catch (e) {
@@ -299,6 +310,9 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
               video: true,
               audio: false
             });
+            if (cancelled) {
+              vs.getTracks().forEach(t => t.stop());
+            }
             setIsMuted(true);
             return vs;
           } catch (e) {
@@ -313,6 +327,9 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
               video: false,
               audio: true
             });
+            if (cancelled) {
+              as.getTracks().forEach(t => t.stop());
+            }
             setIsVideoOff(true);
             return as;
           } catch (e) {
@@ -326,13 +343,23 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         return new MediaStream();
       };
 
-      stream = await getMediaStream();
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        console.warn("navigator.mediaDevices is not available in this context.");
+        setIsVideoOff(true);
+        setIsMuted(true);
+        stream = new MediaStream();
+      } else {
+        stream = await getMediaStream();
+      }
 
       if (initialMedia?.mic === false && stream) {
         stream.getAudioTracks().forEach(t => t.enabled = false);
       }
 
-      if (cancelled) return;
+      if (cancelled) {
+        if (stream) stream.getTracks().forEach(t => t.stop());
+        return;
+      }
 
       streamRef.current = stream;
       setLocalStream(stream);
@@ -373,7 +400,11 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         });
         
         p.on('disconnected', () => {
-          if (!p.destroyed) p.reconnect()
+          if (!p.destroyed) p.reconnect();
+        });
+
+        p.on('error', (err) => {
+          console.warn("PeerJS connection warning caught: ", err);
         });
       };
 
@@ -395,11 +426,14 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
 
       // Try forming as Host
       const tryHost = new Peer(roomPeerId, peerOptions);
+      peerRef.current = tryHost; // Assign immediately to allow instant cleanup!
 
       tryHost.on('open', (id) => {
-        if (cancelled) return;
+        if (cancelled) {
+          tryHost.destroy();
+          return;
+        }
         setIsHost(true);
-        peerRef.current = tryHost;
         setupPeerHandlers(tryHost);
       });
 
@@ -409,7 +443,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
           // Room exists, join as guest
           const guestPeer = new Peer(peerOptions);
           setIsHost(false);
-          peerRef.current = guestPeer;
+          peerRef.current = guestPeer; // Update reference for cleanup
           setupPeerHandlers(guestPeer);
         } else {
           console.error("PeerJS Error:", err);
@@ -823,10 +857,25 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
                   className={`w-full h-full object-cover ${isVideoOff ? 'hidden' : ''} ${isScreenSharing ? '' : '-scale-x-100'}`} 
                 />
                 {isVideoOff && (
-                  <div className="absolute inset-0 flex items-center justify-center bg-[#1E1E1E]">
-                    <div className={`w-20 h-20 ${squircle} bg-slate-800 flex items-center justify-center shadow-inner`}>
-                      <span className="text-2xl text-slate-300 font-medium">You</span>
+                  <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0C0C0F] overflow-hidden">
+                    {/* Cinematic background light */}
+                    <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.06)_0%,transparent_70%)] animate-pulse" />
+                    
+                    {/* Rotating lines and rings */}
+                    <div className="absolute w-24 h-24 rounded-full border border-dashed border-emerald-500/10 animate-[spin_25s_linear_infinite]" />
+                    <div className="absolute w-20 h-20 rounded-full border border-emerald-500/20 shadow-[0_0_20px_rgba(16,185,129,0.1)] animate-[spin_10s_linear_infinite_reverse]" />
+                    
+                    {/* Center Avatar initials block */}
+                    <div className="relative w-16 h-16 rounded-full bg-[#141414] border border-white/10 flex items-center justify-center shadow-xl z-10 select-none">
+                      <span className="text-xl font-black bg-clip-text text-transparent bg-gradient-to-br from-emerald-400 to-teal-200 drop-shadow-sm">
+                        {userName ? (userName.substring(0, 2).toUpperCase()) : 'YOU'}
+                      </span>
                     </div>
+                    
+                    <span className="mt-3 text-[10px] font-semibold uppercase tracking-widest text-[#10B981]/80 flex items-center gap-1 z-10">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-ping" />
+                      Standby Active
+                    </span>
                   </div>
                 )}
                 <div className={`absolute bottom-4 left-4 bg-black/60 backdrop-blur-xl px-3 py-1.5 ${minorSquircle} text-white text-xs font-medium flex items-center border border-white/10 shadow-lg z-10`}>
@@ -979,6 +1028,27 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
             >
               <Smile className="w-4.5 h-4.5 sm:w-5 h-5" />
             </button>
+
+            <AnimatePresence>
+              {showEmojiPicker && (
+                <motion.div 
+                  initial={{ opacity: 0, y: 15, scale: 0.9, x: "-50%" }}
+                  animate={{ opacity: 1, y: 0, scale: 1, x: "-50%" }}
+                  exit={{ opacity: 0, y: 15, scale: 0.9, x: "-50%" }}
+                  className={`absolute bottom-[64px] left-1/2 bg-[#1E1E1E]/95 backdrop-blur-3xl border border-white/10 ${squircle} p-2.5 flex gap-2 shadow-2xl z-50 pointer-events-auto`}
+                >
+                  {['👍', '❤️', '😂', '🎉', '👋', '👀'].map(emoji => (
+                    <button
+                      key={emoji}
+                      onClick={() => sendReaction(emoji)}
+                      className={`w-11 h-11 sm:w-13 sm:h-13 flex items-center justify-center text-xl sm:text-2xl hover:bg-slate-800/80 ${minorSquircle} transition-all hover:scale-110 active:scale-95 text-white`}
+                    >
+                      {emoji}
+                    </button>
+                  ))}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
 
           <button 
@@ -999,27 +1069,6 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
             <PhoneOff className="w-4.5 h-4.5 sm:w-5 h-5" />
           </button>
         </div>
-
-        <AnimatePresence>
-          {showEmojiPicker && (
-            <motion.div 
-              initial={{ opacity: 0, y: 15, scale: 0.9, x: "-50%" }}
-              animate={{ opacity: 1, y: 0, scale: 1, x: "-50%" }}
-              exit={{ opacity: 0, y: 15, scale: 0.9, x: "-50%" }}
-              className={`absolute bottom-[96px] left-1/2 bg-[#1E1E1E]/95 backdrop-blur-3xl border border-white/10 ${squircle} p-2.5 flex gap-2 shadow-2xl z-50 pointer-events-auto`}
-            >
-              {['👍', '❤️', '😂', '🎉', '👋', '👀'].map(emoji => (
-                <button
-                  key={emoji}
-                  onClick={() => sendReaction(emoji)}
-                  className={`w-11 h-11 sm:w-13 sm:h-13 flex items-center justify-center text-xl sm:text-2xl hover:bg-slate-800/80 ${minorSquircle} transition-all hover:scale-110 active:scale-95 text-white`}
-                >
-                  {emoji}
-                </button>
-              ))}
-            </motion.div>
-          )}
-        </AnimatePresence>
       </footer>
     </div>
   );
@@ -1044,12 +1093,34 @@ const PeerVideo = ({
   const ref = useRef<HTMLVideoElement>(null);
   const squircle = "rounded-[24px]";
   const minorSquircle = "rounded-[20px]";
+  const [hasVideo, setHasVideo] = useState(stream.getVideoTracks().filter(t => t.enabled).length > 0);
 
   useEffect(() => {
-    if (ref.current) {
+    if (ref.current && hasVideo) {
       ref.current.srcObject = stream;
       ref.current.play().catch(e => console.error("Play error:", e));
     }
+  }, [stream, hasVideo]);
+
+  useEffect(() => {
+    const handleTrackChange = () => {
+      setHasVideo(stream.getVideoTracks().filter(t => t.enabled).length > 0);
+    };
+
+    stream.getVideoTracks().forEach(track => {
+      track.addEventListener('mute', handleTrackChange);
+      track.addEventListener('unmute', handleTrackChange);
+    });
+
+    const iv = setInterval(handleTrackChange, 1200);
+
+    return () => {
+      clearInterval(iv);
+      stream.getVideoTracks().forEach(track => {
+        track.removeEventListener('mute', handleTrackChange);
+        track.removeEventListener('unmute', handleTrackChange);
+      });
+    };
   }, [stream]);
 
   return (
@@ -1059,12 +1130,35 @@ const PeerVideo = ({
       className="relative min-h-[160px] group transition-all"
     >
       <div className={`absolute inset-0 bg-[#1E1E1E] ${squircle} overflow-hidden border border-[#2A2A2A] flex items-center justify-center shadow-sm`}>
-        <video 
-          ref={ref} 
-          autoPlay 
-          playsInline 
-          className="w-full h-full object-cover" 
-        />
+        {hasVideo ? (
+          <video 
+            ref={ref} 
+            autoPlay 
+            playsInline 
+            className="w-full h-full object-cover" 
+          />
+        ) : (
+          <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#0C0C0F] overflow-hidden">
+            {/* Cinematic background light */}
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(20,184,166,0.06)_0%,transparent_70%)] animate-pulse" />
+            
+            {/* Rotating lines and rings */}
+            <div className="absolute w-24 h-24 rounded-full border border-dashed border-teal-500/10 animate-[spin_20s_linear_infinite]" />
+            <div className="absolute w-20 h-20 rounded-full border border-teal-500/20 shadow-[0_0_20px_rgba(20,184,166,0.1)] animate-[spin_8s_linear_infinite_reverse]" />
+            
+            {/* Center Avatar initials block */}
+            <div className="relative w-16 h-16 rounded-full bg-[#141414] border border-white/10 flex items-center justify-center shadow-xl z-10 select-none">
+              <span className="text-xl font-black bg-clip-text text-transparent bg-gradient-to-br from-teal-400 to-blue-200 drop-shadow-sm">
+                P{peerID.substring(peerID.length - 2).toUpperCase()}
+              </span>
+            </div>
+            
+            <span className="mt-3 text-[10px] font-semibold uppercase tracking-widest text-[#10B981]/80 flex items-center gap-1 z-10">
+              <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-ping" />
+              Feed Standby
+            </span>
+          </div>
+        )}
 
         <div className={`absolute bottom-4 left-4 bg-black/60 backdrop-blur-xl px-3 py-1.5 flex items-center ${minorSquircle} text-white text-xs font-medium border border-white/10 shadow-lg z-10`}>
           {peerID.includes('pure-meet-room-') ? <Shield className="w-3.5 h-3.5 text-amber-500 mr-1.5" /> : null}

@@ -72,20 +72,42 @@ export default function InteractivePanel({
   const [drawColor, setDrawColor] = useState('#10B981'); // default: emerald-500
   const lastPos = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
 
+  const isDrawingRef = useRef(false);
+  const drawColorRef = useRef(drawColor);
+
+  useEffect(() => {
+    drawColorRef.current = drawColor;
+  }, [drawColor]);
+
   useEffect(() => {
     if (activeTab === 'chat' && chatScrollRef.current) {
       chatScrollRef.current.scrollIntoView({ behavior: 'smooth' });
     }
   }, [messages, activeTab]);
 
-  // Handle Collaborative canvas operations
+  // Handle Collaborative canvas operations & Direct touch binders (passive: false)
   useEffect(() => {
     if (activeTab !== 'draw' || !canvasRef.current) return;
     const canvas = canvasRef.current;
     
-    // Set internal resolution match bounding size
+    // Set internal resolution match bounding size while backing up existing paths
     const resizeCanvas = () => {
       const rect = canvas.getBoundingClientRect();
+      const currentWidth = canvas.width;
+      const currentHeight = canvas.height;
+      
+      if (Math.abs(currentWidth - rect.width) < 2 && Math.abs(currentHeight - rect.height) < 2) {
+        return; // Avoid unnecessary clears
+      }
+      
+      const tempCanvas = document.createElement('canvas');
+      tempCanvas.width = currentWidth;
+      tempCanvas.height = currentHeight;
+      const tempCtx = tempCanvas.getContext('2d');
+      if (tempCtx && currentWidth > 0 && currentHeight > 0) {
+        tempCtx.drawImage(canvas, 0, 0);
+      }
+      
       canvas.width = rect.width;
       canvas.height = rect.height;
       
@@ -94,55 +116,102 @@ export default function InteractivePanel({
         ctx.lineCap = 'round';
         ctx.lineJoin = 'round';
         ctx.lineWidth = 3;
+        if (currentWidth > 0 && currentHeight > 0) {
+          ctx.drawImage(tempCanvas, 0, 0, currentWidth, currentHeight, 0, 0, rect.width, rect.height);
+        }
       }
     };
     
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
-    return () => window.removeEventListener('resize', resizeCanvas);
+
+    // Direct DOM event touch handles to override browser-level standard gestures and scrolling (passive: false)
+    const handleTouchStart = (e: TouchEvent) => {
+      e.preventDefault();
+      const rect = canvas.getBoundingClientRect();
+      if (!e.touches || e.touches.length === 0) return;
+      const clientX = e.touches[0].clientX;
+      const clientY = e.touches[0].clientY;
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      
+      lastPos.current = { x, y };
+      isDrawingRef.current = true;
+      setIsDrawing(true);
+    };
+
+    const handleTouchMove = (e: TouchEvent) => {
+      e.preventDefault();
+      if (!isDrawingRef.current) return;
+      const rect = canvas.getBoundingClientRect();
+      const ctx = canvas.getContext('2d');
+      if (!ctx) return;
+      
+      if (!e.touches || e.touches.length === 0) return;
+      const clientX = e.touches[0].clientX;
+      const clientY = e.touches[0].clientY;
+      const x = clientX - rect.left;
+      const y = clientY - rect.top;
+      
+      const currentColor = drawColorRef.current;
+      ctx.strokeStyle = currentColor;
+      ctx.beginPath();
+      ctx.moveTo(lastPos.current.x, lastPos.current.y);
+      ctx.lineTo(x, y);
+      ctx.stroke();
+      
+      broadcastData('canvas_draw', {
+        x,
+        y,
+        lastX: lastPos.current.x,
+        lastY: lastPos.current.y,
+        color: currentColor
+      });
+      
+      lastPos.current = { x, y };
+    };
+
+    const handleTouchEnd = () => {
+      isDrawingRef.current = false;
+      setIsDrawing(false);
+    };
+
+    canvas.addEventListener('touchstart', handleTouchStart, { passive: false });
+    canvas.addEventListener('touchmove', handleTouchMove, { passive: false });
+    canvas.addEventListener('touchend', handleTouchEnd, { passive: false });
+    canvas.addEventListener('touchcancel', handleTouchEnd, { passive: false });
+
+    return () => {
+      window.removeEventListener('resize', resizeCanvas);
+      canvas.removeEventListener('touchstart', handleTouchStart);
+      canvas.removeEventListener('touchmove', handleTouchMove);
+      canvas.removeEventListener('touchend', handleTouchEnd);
+      canvas.removeEventListener('touchcancel', handleTouchEnd);
+    };
   }, [activeTab]);
 
-  // Canvas drawing handlers
-  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
+  // Mouse standard drawing handlers
+  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
     if (!canvasRef.current) return;
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
-    
-    let clientX, clientY;
-    if ('touches' in e) {
-      clientX = e.touches[0].clientX;
-      clientY = e.touches[0].clientY;
-    } else {
-      clientX = e.clientX;
-      clientY = e.clientY;
-    }
-    
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
     
     lastPos.current = { x, y };
+    isDrawingRef.current = true;
     setIsDrawing(true);
   };
 
-  const draw = (e: React.MouseEvent<HTMLCanvasElement> | React.TouchEvent<HTMLCanvasElement>) => {
-    if (!isDrawing || !canvasRef.current) return;
+  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!isDrawingRef.current || !canvasRef.current) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
     
     const rect = canvas.getBoundingClientRect();
-    
-    let clientX, clientY;
-    if ('touches' in e) {
-      clientX = e.touches[0].clientX;
-      clientY = e.touches[0].clientY;
-    } else {
-      clientX = e.clientX;
-      clientY = e.clientY;
-    }
-    
-    const x = clientX - rect.left;
-    const y = clientY - rect.top;
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
     
     ctx.strokeStyle = drawColor;
     ctx.beginPath();
@@ -163,6 +232,7 @@ export default function InteractivePanel({
   };
 
   const stopDrawing = () => {
+    isDrawingRef.current = false;
     setIsDrawing(false);
   };
 
@@ -635,9 +705,6 @@ export default function InteractivePanel({
                   onMouseMove={draw}
                   onMouseUp={stopDrawing}
                   onMouseLeave={stopDrawing}
-                  onTouchStart={startDrawing}
-                  onTouchMove={draw}
-                  onTouchEnd={stopDrawing}
                   className="h-full w-full cursor-crosshair touch-none block"
                 />
                 

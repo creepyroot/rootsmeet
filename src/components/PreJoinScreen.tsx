@@ -20,70 +20,185 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }: Pr
   const minorSquircle = "rounded-[20px]";
 
   useEffect(() => {
-    let currentStream: MediaStream | null = null;
+    let cancelled = false;
+    let activeStream: MediaStream | null = null;
     
     const initPreview = async () => {
+      if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        console.warn("MediaDevices API not available.");
+        setError('Secure origin (HTTPS) or supported browser required for media.');
+        setMicEnabled(false);
+        setVideoEnabled(false);
+        setStream(new MediaStream());
+        return;
+      }
+
+      const getMediaStream = async (): Promise<MediaStream> => {
+        const videoConstraint = { 
+          width: { ideal: 1280 }, 
+          height: { ideal: 720 },
+          facingMode: "user"
+        };
+        
+        // Try 1: Try both mic and video (with ideal video spec)
+        try {
+          return await navigator.mediaDevices.getUserMedia({
+            video: videoConstraint,
+            audio: true
+          });
+        } catch (e) {
+          console.warn("Try 1 failed (both ideal):", e);
+        }
+
+        // Try 2: Try both mic and video (standard/simple video spec)
+        try {
+          return await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: true
+          });
+        } catch (e) {
+          console.warn("Try 2 failed (both simple):", e);
+        }
+
+        // Try 3: Try video only (ideal spec)
+        try {
+          const vs = await navigator.mediaDevices.getUserMedia({
+            video: videoConstraint,
+            audio: false
+          });
+          setMicEnabled(false);
+          return vs;
+        } catch (e) {
+          console.warn("Try 3 failed (video ideal):", e);
+        }
+
+        // Try 4: Try video only (simple spec)
+        try {
+          const vs = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false
+          });
+          setMicEnabled(false);
+          return vs;
+        } catch (e) {
+          console.warn("Try 4 failed (video simple):", e);
+        }
+
+        // Try 5: Try audio only
+        try {
+          const as = await navigator.mediaDevices.getUserMedia({
+            video: false,
+            audio: true
+          });
+          setVideoEnabled(false);
+          return as;
+        } catch (e) {
+          console.warn("Try 5 failed (audio only):", e);
+        }
+
+        // Fallback: Empty stream (all blocked)
+        setVideoEnabled(false);
+        setMicEnabled(false);
+        setError('Standby Mode: Access to mic & camera is blocked or unavailable.');
+        return new MediaStream();
+      };
+
       try {
-        currentStream = await navigator.mediaDevices.getUserMedia({ 
-          video: { 
-            width: { ideal: 1280 }, 
-            height: { ideal: 720 },
-            facingMode: "user"
-          }, 
-          audio: true 
-        });
+        const currentStream = await getMediaStream();
+
+        if (cancelled) {
+          currentStream.getTracks().forEach(t => t.stop());
+          return;
+        }
+
+        activeStream = currentStream;
         setStream(currentStream);
-        if (videoRef.current) {
+        
+        // Disable any tracks matching starting toggle values
+        currentStream.getAudioTracks().forEach(t => t.enabled = micEnabled);
+        currentStream.getVideoTracks().forEach(t => t.enabled = videoEnabled);
+
+        if (videoRef.current && currentStream.getVideoTracks().length > 0) {
           videoRef.current.srcObject = currentStream;
         }
       } catch (err) {
-        console.warn("Optimal camera constraints failed, trying fallback...", err);
-        try {
-          // Standard video/audio without resolution constraints
-          currentStream = await navigator.mediaDevices.getUserMedia({ 
-            video: true, 
-            audio: true 
-          });
-          setStream(currentStream);
-          if (videoRef.current) {
-            videoRef.current.srcObject = currentStream;
-          }
-        } catch (err2) {
-          console.warn("No camera available, falling back to audio only.", err2);
-          try {
-            currentStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
-            setStream(currentStream);
-            setVideoEnabled(false);
-          } catch (err3) {
-            setError('Could not access microphone or camera. Please check permissions.');
-            setMicEnabled(false);
-            setVideoEnabled(false);
-          }
-        }
+        if (cancelled) return;
+        console.error("Critical prejoin preview error:", err);
+        setError('Could not run preview. Running in standby mode.');
+        setMicEnabled(false);
+        setVideoEnabled(false);
+        setStream(new MediaStream());
       }
     };
 
     initPreview();
 
     return () => {
-      if (currentStream) {
-        currentStream.getTracks().forEach(track => track.stop());
+      cancelled = true;
+      if (activeStream) {
+        activeStream.getTracks().forEach(track => track.stop());
       }
     };
   }, []);
 
-  const toggleMic = () => {
-    if (stream) {
-      stream.getAudioTracks().forEach(t => t.enabled = !micEnabled);
+  const toggleMic = async () => {
+    if (!micEnabled) {
+      if (stream) {
+        const tracks = stream.getAudioTracks();
+        if (tracks.length === 0) {
+          try {
+            const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const newTrack = tempStream.getAudioTracks()[0];
+            if (newTrack) {
+              stream.addTrack(newTrack);
+              newTrack.enabled = true;
+            }
+          } catch (e) {
+            console.warn("Failed to acquire audio track dynamically:", e);
+          }
+        } else {
+          tracks.forEach(t => t.enabled = true);
+        }
+      }
+      setMicEnabled(true);
+    } else {
+      if (stream) {
+        stream.getAudioTracks().forEach(t => t.enabled = false);
+      }
+      setMicEnabled(false);
     }
-    setMicEnabled(!micEnabled);
   };
 
-  const toggleVideo = () => {
-    if (stream) {
-      stream.getVideoTracks().forEach(t => t.enabled = !videoEnabled);
+  const toggleVideo = async () => {
+    if (!videoEnabled) {
+      if (stream) {
+        const tracks = stream.getVideoTracks();
+        if (tracks.length === 0) {
+          try {
+            const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            const newTrack = tempStream.getVideoTracks()[0];
+            if (newTrack) {
+              stream.addTrack(newTrack);
+              newTrack.enabled = true;
+              if (videoRef.current) {
+                videoRef.current.srcObject = stream;
+              }
+              setError(null);
+            }
+          } catch (e) {
+            console.warn("Failed to acquire camera track dynamically:", e);
+          }
+        } else {
+          tracks.forEach(t => t.enabled = true);
+        }
+      }
+      setVideoEnabled(true);
+    } else {
+      if (stream) {
+        stream.getVideoTracks().forEach(t => t.enabled = false);
+      }
+      setVideoEnabled(false);
     }
-    setVideoEnabled(!videoEnabled);
   };
 
   const handleJoin = () => {
@@ -91,6 +206,13 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }: Pr
       stream.getTracks().forEach(t => t.stop());
     }
     onJoin(micEnabled, videoEnabled);
+  };
+
+  const getInitials = (nameString: string) => {
+    const parts = nameString.trim().split(/\s+/);
+    if (!parts.length || !parts[0]) return 'M';
+    if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();
+    return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   };
 
   return (
@@ -107,7 +229,7 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }: Pr
         transition={{ duration: 0.4, ease: "easeOut" }}
         className={`w-full max-w-[900px] bg-[#141414]/80 backdrop-blur-3xl ${squircle} shadow-[0_24px_80px_rgba(0,0,0,0.4)] border border-white/10 p-6 sm:p-8 flex flex-col md:flex-row gap-8 items-center relative z-10`}
       >
-        <div className={`relative w-full md:w-3/5 aspect-video bg-[#0A0A0A] ${minorSquircle} overflow-hidden shadow-inner flex items-center justify-center border border-white/5`}>
+        <div className={`relative w-full md:w-3/5 aspect-video bg-[#0C0C0F] ${minorSquircle} overflow-hidden shadow-inner flex items-center justify-center border border-white/5`}>
           {videoEnabled && !error ? (
             <video 
               ref={videoRef} 
@@ -117,9 +239,42 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }: Pr
               className="w-full h-full object-cover -scale-x-100" 
             />
           ) : (
-            <div className="flex flex-col items-center gap-3 text-slate-500">
-              <VidIcon className="w-12 h-12 opacity-20" />
-              <p className="text-sm font-medium">{error || "Camera is off"}</p>
+            <div className="relative flex flex-col items-center justify-center w-full h-full overflow-hidden">
+              {/* Cinematic scanning lines and rotating rings */}
+              <div className="absolute inset-0 bg-gradient-to-t from-emerald-500/5 via-transparent to-transparent z-0 pointer-events-none" />
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.08)_0%,transparent_70%)] z-0 pointer-events-none animate-pulse" />
+              
+              {/* Outer dashed spinning loop */}
+              <div className="absolute w-32 h-32 rounded-full border border-dashed border-emerald-500/10 animate-[spin_30s_linear_infinite]" />
+              
+              {/* Inner continuous spin ring */}
+              <div className="absolute w-28 h-28 rounded-full border border-emerald-500/20 shadow-[0_0_30px_rgba(16,185,129,0.15)] animate-[spin_12s_linear_infinite]" />
+              
+              {/* The glowing avatar button container */}
+              <div className="relative w-20 h-20 rounded-full bg-[#141414] border border-white/10 flex items-center justify-center shadow-2xl z-10 select-none">
+                <span className="text-3xl font-black bg-clip-text text-transparent bg-gradient-to-br from-emerald-400 to-teal-200 drop-shadow-[0_2px_8px_rgba(16,185,129,0.4)] tracking-wide">
+                  {getInitials(userName)}
+                </span>
+                
+                {/* Active radar blip */}
+                {micEnabled && (
+                  <span className="absolute bottom-1 right-1 flex h-3.5 w-3.5">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-3.5 w-3.5 bg-emerald-500"></span>
+                  </span>
+                )}
+              </div>
+              
+              {/* Sub-label */}
+              <p className="mt-4 text-xs font-semibold uppercase tracking-widest text-[#10B981] drop-shadow-[0_0_10px_rgba(16,185,129,0.3)] flex items-center gap-1.5 z-10">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#10B981] animate-ping" />
+                {error ? "Standby Mode" : "Camera Paused"}
+              </p>
+              {error && (
+                <p className="mt-1 text-[10px] text-slate-500 max-w-[80%] text-center uppercase tracking-widest leading-relaxed z-10 truncate px-2">
+                  Mic & video restricted or unavailable
+                </p>
+              )}
             </div>
           )}
 
