@@ -9,6 +9,7 @@ import RoomScreen from './components/RoomScreen';
 
 export default function App() {
   const [roomId, setRoomId] = useState<string | null>(null);
+  const [userName, setUserName] = useState<string>('');
 
   useEffect(() => {
     // Check URL parameters for immediate join support
@@ -19,14 +20,15 @@ export default function App() {
     }
   }, []);
 
-  const handleCreate = () => {
-    // Generate a random room string like xxx-xxx-xxx
-    const generateSegment = () => Math.random().toString(36).substring(2, 5);
-    const newRoom = `${generateSegment()}-${generateSegment()}-${generateSegment()}`;
-    joinRoom(newRoom);
+  const handleCreate = (name: string) => {
+    setUserName(name);
+    // Generate a 10 digit random room string
+    const newRoom = Math.floor(1000000000 + Math.random() * 9000000000).toString();
+    joinRoom(newRoom, name);
   };
 
-  const joinRoom = (id: string) => {
+  const joinRoom = (id: string, name: string) => {
+    setUserName(name);
     setRoomId(id);
     const url = new URL(window.location.href);
     url.searchParams.set('room', id);
@@ -41,7 +43,7 @@ export default function App() {
   };
 
   if (roomId) {
-    return <RoomScreen roomId={roomId} onLeave={leaveRoom} />;
+    return <RoomScreen roomId={roomId} onLeave={leaveRoom} userName={userName || 'Guest'} />;
   }
 
   return <JoinScreen onJoin={joinRoom} onCreate={handleCreate} />;

@@ -1,36 +1,45 @@
 import { useState } from 'react';
-import { Video, Keyboard, ArrowRight } from 'lucide-react';
+import { Video, Keyboard, ArrowRight, User } from 'lucide-react';
 import { motion } from 'motion/react';
 
 interface JoinScreenProps {
-  onJoin: (roomId: string) => void;
-  onCreate: () => void;
+  onJoin: (roomId: string, name: string) => void;
+  onCreate: (name: string) => void;
 }
 
 export default function JoinScreen({ onJoin, onCreate }: JoinScreenProps) {
   const [roomId, setRoomId] = useState('');
+  const [userName, setUserName] = useState('');
 
   const handleJoin = (e: React.FormEvent) => {
     e.preventDefault();
-    if (roomId.trim() !== '') {
-      onJoin(roomId.trim());
+    if (roomId.trim() !== '' && userName.trim() !== '') {
+      onJoin(roomId.trim(), userName.trim());
+    }
+  };
+
+  const handleCreate = () => {
+    if (userName.trim() !== '') {
+      onCreate(userName.trim());
+    } else {
+      alert("Please enter a name first.");
     }
   };
 
   return (
-    <div className="min-h-screen bg-[#F7F7F8] flex flex-col items-center justify-center p-6 font-sans">
+    <div className="h-full w-full bg-[#F7F7F8] flex flex-col items-center justify-center p-4 sm:p-6 font-sans overflow-auto">
       <motion.div 
         initial={{ opacity: 0, scale: 0.95, y: 10 }}
         animate={{ opacity: 1, scale: 1, y: 0 }}
         transition={{ duration: 0.4, ease: "easeOut" }}
-        className="w-full max-w-[440px] bg-white rounded-[24px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 overflow-hidden"
+        className="w-full max-w-[440px] bg-white rounded-[24px] shadow-[0_8px_30px_rgb(0,0,0,0.04)] border border-slate-100 overflow-hidden my-auto"
       >
         <div className="p-8 pb-6 border-b border-slate-50">
           <div className="w-12 h-12 bg-slate-900 rounded-2xl flex items-center justify-center mb-6 shadow-sm">
             <Video className="w-6 h-6 text-white" />
           </div>
           <h1 className="text-2xl font-semibold tracking-tight text-slate-900 mb-2">
-            Video Meetings
+            ROOTS MEET
           </h1>
           <p className="text-slate-500 text-sm font-medium leading-relaxed">
             Create a secure room or enter a code to join an existing session seamlessly.
@@ -38,9 +47,27 @@ export default function JoinScreen({ onJoin, onCreate }: JoinScreenProps) {
         </div>
 
         <div className="p-8 pt-6 space-y-6">
+          <div>
+            <label htmlFor="userName" className="block text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">
+              Your Name
+            </label>
+            <div className="relative flex items-center">
+              <User className="w-5 h-5 text-slate-400 absolute left-3.5" />
+              <input 
+                id="userName"
+                type="text" 
+                placeholder="e.g. John Doe" 
+                value={userName}
+                onChange={(e) => setUserName(e.target.value)}
+                className="w-full pl-11 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-slate-900/10 focus:border-slate-900 transition-all text-slate-900 placeholder:text-slate-400 font-medium"
+              />
+            </div>
+          </div>
+
           <button 
-            onClick={onCreate}
-            className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white font-medium rounded-xl flex items-center justify-center gap-2 transition-all shadow-sm active:scale-[0.98]"
+            onClick={handleCreate}
+            disabled={userName.trim() === ''}
+            className="w-full py-3.5 bg-slate-900 hover:bg-slate-800 text-white font-medium rounded-xl flex items-center justify-center gap-2 transition-all shadow-sm active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             Start New Meeting
           </button>
@@ -73,7 +100,7 @@ export default function JoinScreen({ onJoin, onCreate }: JoinScreenProps) {
             </div>
             <button 
               type="submit"
-              disabled={roomId.trim() === ''}
+              disabled={roomId.trim() === '' || userName.trim() === ''}
               className="w-full py-3.5 bg-white border-2 border-slate-200 text-slate-900 font-medium rounded-xl hover:border-slate-300 hover:bg-slate-50 disabled:opacity-50 disabled:cursor-not-allowed transition-all flex items-center justify-center gap-2 active:scale-[0.98]"
             >
               Join Meeting <ArrowRight className="w-4 h-4 text-slate-400" />
