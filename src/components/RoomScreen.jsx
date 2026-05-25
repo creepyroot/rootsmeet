@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import Peer, { MediaConnection, DataConnection } from 'peerjs';
+import Peer from 'peerjs';
 import { Mic, MicOff, Video as VidIcon, VideoOff, PhoneOff, MonitorUp, Users, Copy, Check, MessageSquare, X, Send, Hand, Smile, Shield, ShieldOff, UserX, FileUp, Download, MicOff as MicOffAdmin, VideoOff as VideoOffAdmin, Disc2, Subtitles } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import InteractivePanel from './InteractivePanel';
@@ -54,8 +54,10 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     if (data.type === 'peer-list' && isHost === false) {
       // Connect to other peers in the room
       const existingPeers = data.peers;
+      console.log('Received peer list from host:', existingPeers);
       existingPeers.forEach(peerId => {
         if (peerId !== peerRef.current?.id && !mediaConnections.current.has(peerId)) {
+          console.log('Connecting to peer from list:', peerId);
           connectToPeer(peerId, streamRef.current);
         }
       });
@@ -167,17 +169,25 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
 
   const setupDataConnection = useCallback((conn) => {
     conn.on('open', () => {
-      if (isHost && peerRef.current) {
-        // Send list of all existing peers to new joiner
-        const peerList = Array.from(mediaConnections.current.keys()).filter(id => id !== conn.peer);
-        conn.send({ type: 'peer-list', peers: peerList });
-      }
+      // Delay sending peer-list to ensure connection is fully established
+      setTimeout(() => {
+        if (isHost && peerRef.current) {
+          // Send list of all existing peers to new joiner
+          const peerList = Array.from(mediaConnections.current.keys()).filter(id => id !== conn.peer);
+          if (peerList.length > 0) {
+            conn.send({ type: 'peer-list', peers: peerList });
+          }
+        }
+      }, 500);
     });
     conn.on('data', (data) => {
       handleDataMessage(conn.peer, data);
     });
     conn.on('close', () => {
       dataConnections.current.delete(conn.peer);
+    });
+    conn.on('error', (err) => {
+      console.warn("Data connection error:", err);
     });
   }, [isHost, handleDataMessage]);
 
@@ -191,8 +201,8 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       setupDataConnection(dataConn);
     }
     
-    // Connect Media
-    if (stream && !mediaConnections.current.has(peerId)) {
+    // Connect Media - always try to establish media connection with stream
+    if (!mediaConnections.current.has(peerId)) {
        const call = peerRef.current.call(peerId, stream);
        mediaConnections.current.set(peerId, call);
        
@@ -206,6 +216,10 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
        call.on('close', () => {
          mediaConnections.current.delete(peerId);
          setPeers(prev => prev.filter(p => p.id !== peerId));
+       });
+       
+       call.on('error', (err) => {
+         console.warn("Media call error:", err);
        });
     }
   }, [setupDataConnection]);
@@ -358,23 +372,32 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         });
 
         p.on('connection', (conn) => {
-          dataConnections.current.set(conn.peer, conn);
-          setupDataConnection(conn);
+          // Only set up if not already connected
+          if (!dataConnections.current.has(conn.peer)) {
+            dataConnections.current.set(conn.peer, conn);
+            setupDataConnection(conn);
+          }
         });
 
         p.on('call', (call) => {
-          mediaConnections.current.set(call.peer, call);
-          call.answer(streamRef.current || undefined);
-          call.on('stream', (userVideoStream) => {
-            setPeers(prev => {
-              if (prev.find(peer => peer.id === call.peer)) return prev;
-              return [...prev, { id: call.peer, stream: userVideoStream }];
+          // Only answer if not already in a media connection with this peer
+          if (!mediaConnections.current.has(call.peer)) {
+            mediaConnections.current.set(call.peer, call);
+            call.answer(streamRef.current || undefined);
+            call.on('stream', (userVideoStream) => {
+              setPeers(prev => {
+                if (prev.find(peer => peer.id === call.peer)) return prev;
+                return [...prev, { id: call.peer, stream: userVideoStream }];
+              });
             });
-          });
-          call.on('close', () => {
-             mediaConnections.current.delete(call.peer);
-             setPeers(prev => prev.filter(peer => peer.id !== call.peer));
-          });
+            call.on('close', () => {
+               mediaConnections.current.delete(call.peer);
+               setPeers(prev => prev.filter(peer => peer.id !== call.peer));
+            });
+            call.on('error', (err) => {
+              console.warn("Incoming call error:", err);
+            });
+          }
         });
         
         p.on('disconnected', () => {
@@ -923,6 +946,13 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     setMessages(prev => [...prev, { ...payload, isSelf: true }]);
     broadcastData('chat', payload);
     setChatInput('');
+    
+    // Scroll to bottom after sending
+    setTimeout(() => {
+      if (chatScrollRef.current) {
+        chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+      }
+    }, 50);
   };
 
   const handleFileUpload = (e) => {

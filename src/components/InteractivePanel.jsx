@@ -46,7 +46,11 @@ export default function InteractivePanel({
 
   useEffect(() => {
     if (activeTab === 'chat' && chatScrollRef.current) {
-      chatScrollRef.current.scrollIntoView({ behavior: 'smooth' });
+      requestAnimationFrame(() => {
+        if (chatScrollRef.current) {
+          chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+        }
+      });
     }
   }, [messages, activeTab]);
 
