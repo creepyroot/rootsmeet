@@ -62,8 +62,13 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         }
       });
     } else if (data.type === 'chat') {
+      console.log('[RoomScreen] Received chat message from:', senderId, data.payload);
       setMessages(prev => {
-        if (prev.find(p => p.id === data.payload.id)) return prev;
+        if (prev.find(p => p.id === data.payload.id)) {
+          console.log('[RoomScreen] Duplicate chat message, ignoring');
+          return prev;
+        }
+        console.log('[RoomScreen] Adding new chat message');
         return [...prev, { ...data.payload, isSelf: false }];
       });
       if (!showChatRef.current) {
@@ -194,33 +199,56 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   const connectToPeer = useCallback((peerId, stream) => {
     if (!peerRef.current) return;
     
+    console.log('[RoomScreen] Attempting to connect to peer:', peerId, 'Stream available:', !!stream);
+    
     // Connect Data
     if (!dataConnections.current.has(peerId)) {
       const dataConn = peerRef.current.connect(peerId);
       dataConnections.current.set(peerId, dataConn);
       setupDataConnection(dataConn);
+      console.log('[RoomScreen] Data connection initiated with:', peerId);
     }
     
     // Connect Media - always try to establish media connection with stream
     if (!mediaConnections.current.has(peerId)) {
+       if (!stream) {
+         console.warn('[RoomScreen] No stream available for calling peer:', peerId);
+         // Wait a bit and retry if stream is not ready yet
+         setTimeout(() => {
+           if (streamRef.current) {
+             connectToPeer(peerId, streamRef.current);
+           }
+         }, 500);
+         return;
+       }
+       
        const call = peerRef.current.call(peerId, stream);
        mediaConnections.current.set(peerId, call);
+       console.log('[RoomScreen] Media call initiated with:', peerId);
        
        call.on('stream', (userVideoStream) => {
+         console.log('[RoomScreen] Received stream from peer:', peerId);
          setPeers(prev => {
-           if (prev.find(p => p.id === peerId)) return prev;
+           if (prev.find(p => p.id === peerId)) {
+             console.log('[RoomScreen] Peer already exists, updating stream');
+             return prev.map(p => p.id === peerId ? { ...p, stream: userVideoStream } : p);
+           }
+           console.log('[RoomScreen] Adding new peer:', peerId);
            return [...prev, { id: peerId, stream: userVideoStream }];
          });
        });
        
        call.on('close', () => {
+         console.log('[RoomScreen] Media call closed with:', peerId);
          mediaConnections.current.delete(peerId);
          setPeers(prev => prev.filter(p => p.id !== peerId));
        });
        
        call.on('error', (err) => {
-         console.warn("Media call error:", err);
+         console.error("[RoomScreen] Media call error with", peerId, ":", err);
        });
+    } else {
+      console.log('[RoomScreen] Media connection already exists with:', peerId);
     }
   }, [setupDataConnection]);
 
@@ -380,23 +408,34 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         });
 
         p.on('call', (call) => {
+          console.log('[RoomScreen] Incoming call from:', call.peer);
           // Only answer if not already in a media connection with this peer
           if (!mediaConnections.current.has(call.peer)) {
             mediaConnections.current.set(call.peer, call);
-            call.answer(streamRef.current || undefined);
+            const currentStream = streamRef.current;
+            console.log('[RoomScreen] Answering call with stream:', !!currentStream);
+            call.answer(currentStream || undefined);
             call.on('stream', (userVideoStream) => {
+              console.log('[RoomScreen] Received incoming stream from:', call.peer);
               setPeers(prev => {
-                if (prev.find(peer => peer.id === call.peer)) return prev;
+                if (prev.find(peer => peer.id === call.peer)) {
+                  console.log('[RoomScreen] Incoming peer already exists, updating stream');
+                  return prev.map(p => p.id === call.peer ? { ...p, stream: userVideoStream } : p);
+                }
+                console.log('[RoomScreen] Adding new incoming peer:', call.peer);
                 return [...prev, { id: call.peer, stream: userVideoStream }];
               });
             });
             call.on('close', () => {
+               console.log('[RoomScreen] Incoming call closed:', call.peer);
                mediaConnections.current.delete(call.peer);
                setPeers(prev => prev.filter(peer => peer.id !== call.peer));
             });
             call.on('error', (err) => {
-              console.warn("Incoming call error:", err);
+              console.error("[RoomScreen] Incoming call error:", call.peer, err);
             });
+          } else {
+            console.log('[RoomScreen] Already have media connection with:', call.peer);
           }
         });
         
@@ -933,7 +972,10 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
 
   const sendChatMessage = (e) => {
     e.preventDefault();
-    if (!chatInput.trim() || !peerRef.current) return;
+    if (!chatInput.trim() || !peerRef.current) {
+      console.warn('[RoomScreen] Cannot send chat: no input or peer not ready');
+      return;
+    }
     
     const payload = {
       id: Math.random().toString(36),
@@ -943,6 +985,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       timestamp: Date.now()
     };
     
+    console.log('[RoomScreen] Sending chat message:', payload);
     setMessages(prev => [...prev, { ...payload, isSelf: true }]);
     broadcastData('chat', payload);
     setChatInput('');

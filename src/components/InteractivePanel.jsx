@@ -54,6 +54,17 @@ export default function InteractivePanel({
     }
   }, [messages, activeTab]);
 
+  // Also scroll when messages are updated in real-time
+  useEffect(() => {
+    if (chatScrollRef.current) {
+      setTimeout(() => {
+        if (chatScrollRef.current) {
+          chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
+        }
+      }, 100);
+    }
+  }, [messages.length]);
+
   // Handle Collaborative canvas operations & Direct touch binders (passive: false)
   useEffect(() => {
     if (activeTab !== 'draw' || !canvasRef.current) return;
