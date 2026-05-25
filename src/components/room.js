@@ -121,6 +121,9 @@ window.roomComponent = {
         `;
         
         this.element = container;
+        // Append to DOM immediately
+        document.getElementById('app').appendChild(container);
+        container.style.display = 'none';
         return container;
     },
     
@@ -128,7 +131,7 @@ window.roomComponent = {
         // Add local video
         this.addLocalVideo();
         
-        // Setup event listeners
+        // Setup event listeners using element context
         this.setupEventListeners();
         
         // Initialize PeerJS connection
@@ -136,7 +139,7 @@ window.roomComponent = {
     },
     
     addLocalVideo: function() {
-        const videoGrid = document.getElementById('videoGrid');
+        const videoGrid = this.element.querySelector('#videoGrid');
         const videoItem = document.createElement('div');
         videoItem.className = 'video-item';
         videoItem.id = 'localVideoItem';
@@ -152,7 +155,7 @@ window.roomComponent = {
             videoItem.appendChild(video);
             
             setTimeout(() => {
-                const vidEl = document.getElementById('localVideoRoom');
+                const vidEl = this.element.querySelector('#localVideoRoom');
                 if (vidEl && state.localStream) {
                     mediaUtils.attachStreamToVideo(state.localStream, vidEl);
                 }
@@ -174,10 +177,12 @@ window.roomComponent = {
     },
     
     setupEventListeners: function() {
+        const root = this.element;
+        
         // Toggle microphone
-        document.getElementById('btnToggleMic').addEventListener('click', () => {
+        root.querySelector('#btnToggleMic').addEventListener('click', () => {
             state.isMuted = !state.isMuted;
-            const btn = document.getElementById('btnToggleMic');
+            const btn = root.querySelector('#btnToggleMic');
             btn.classList.toggle('active', !state.isMuted);
             
             if (state.localStream) {
@@ -189,9 +194,9 @@ window.roomComponent = {
         });
         
         // Toggle video
-        document.getElementById('btnToggleVideo').addEventListener('click', () => {
+        root.querySelector('#btnToggleVideo').addEventListener('click', () => {
             state.isVideoOff = !state.isVideoOff;
-            const btn = document.getElementById('btnToggleVideo');
+            const btn = root.querySelector('#btnToggleVideo');
             btn.classList.toggle('active', !state.isVideoOff);
             
             if (state.localStream) {
@@ -202,7 +207,7 @@ window.roomComponent = {
             }
             
             // Update local video display
-            const localVideoItem = document.getElementById('localVideoItem');
+            const localVideoItem = root.querySelector('#localVideoItem');
             if (localVideoItem) {
                 localVideoItem.remove();
             }
@@ -210,32 +215,32 @@ window.roomComponent = {
         });
         
         // Copy room ID
-        document.getElementById('btnCopyRoomId').addEventListener('click', async () => {
+        root.querySelector('#btnCopyRoomId').addEventListener('click', async () => {
             await helpers.copyToClipboard(state.roomId);
             helpers.showToast('Room ID copied!', 'success');
         });
         
         // Toggle chat
-        document.getElementById('btnToggleChat').addEventListener('click', () => {
-            const chatPanel = document.getElementById('chatPanel');
+        root.querySelector('#btnToggleChat').addEventListener('click', () => {
+            const chatPanel = root.querySelector('#chatPanel');
             chatPanel.classList.toggle('open');
             state.showChat = !state.showChat;
         });
         
-        document.getElementById('btnCloseChat').addEventListener('click', () => {
-            const chatPanel = document.getElementById('chatPanel');
+        root.querySelector('#btnCloseChat').addEventListener('click', () => {
+            const chatPanel = root.querySelector('#chatPanel');
             chatPanel.classList.remove('open');
             state.showChat = false;
         });
         
         // Toggle participants
-        document.getElementById('btnParticipants').addEventListener('click', () => {
-            const panel = document.getElementById('participantsPanel');
+        root.querySelector('#btnParticipants').addEventListener('click', () => {
+            const panel = root.querySelector('#participantsPanel');
             panel.classList.toggle('open');
         });
         
         // Screen share
-        document.getElementById('btnScreenShare').addEventListener('click', async () => {
+        root.querySelector('#btnScreenShare').addEventListener('click', async () => {
             try {
                 const screenStream = await mediaUtils.getScreenShareStream();
                 helpers.showToast('Screen sharing started', 'success');
@@ -250,25 +255,25 @@ window.roomComponent = {
         });
         
         // Raise hand
-        document.getElementById('btnRaiseHand').addEventListener('click', () => {
+        root.querySelector('#btnRaiseHand').addEventListener('click', () => {
             helpers.showToast('Hand raised!', 'info');
             // Send signal to other peers
             this.sendDataToAll({ type: 'raiseHand', userId: state.peer.id });
         });
         
         // Reactions
-        document.getElementById('btnReactions').addEventListener('click', () => {
+        root.querySelector('#btnReactions').addEventListener('click', () => {
             this.showReactionPicker();
         });
         
         // Leave meeting
-        document.getElementById('btnLeave').addEventListener('click', () => {
+        root.querySelector('#btnLeave').addEventListener('click', () => {
             this.leaveMeeting();
         });
         
         // Chat input
-        const chatInput = document.getElementById('chatInput');
-        const btnSendMessage = document.getElementById('btnSendMessage');
+        const chatInput = root.querySelector('#chatInput');
+        const btnSendMessage = root.querySelector('#btnSendMessage');
         
         const sendMessage = () => {
             const text = chatInput.value.trim();
@@ -363,7 +368,7 @@ window.roomComponent = {
     },
     
     addRemoteVideo: function(stream, peerId) {
-        const videoGrid = document.getElementById('videoGrid');
+        const videoGrid = this.element.querySelector('#videoGrid');
         const videoItem = document.createElement('div');
         videoItem.className = 'video-item';
         videoItem.id = 'video-' + peerId;
@@ -416,7 +421,7 @@ window.roomComponent = {
     },
     
     addChatMessage: function(sender, text, isLocal) {
-        const chatMessages = document.getElementById('chatMessages');
+        const chatMessages = this.element.querySelector('#chatMessages');
         const messageDiv = document.createElement('div');
         messageDiv.className = 'chat-message';
         
@@ -440,7 +445,7 @@ window.roomComponent = {
     },
     
     showReaction: function(emoji, x, y) {
-        const container = document.getElementById('reactionContainer');
+        const container = this.element.querySelector('#reactionContainer');
         const reaction = document.createElement('div');
         reaction.className = 'reaction';
         reaction.textContent = emoji;
@@ -455,7 +460,7 @@ window.roomComponent = {
     },
     
     updateGridLayout: function() {
-        const videoGrid = document.getElementById('videoGrid');
+        const videoGrid = this.element.querySelector('#videoGrid');
         const count = videoGrid.children.length;
         
         videoGrid.className = 'video-grid-container';
@@ -466,10 +471,10 @@ window.roomComponent = {
     },
     
     updateParticipantsList: function() {
-        const list = document.getElementById('participantsList');
+        const list = this.element.querySelector('#participantsList');
         const count = state.dataConnections.size + 1;
         
-        document.getElementById('participantsCount').textContent = `${count} participant${count !== 1 ? 's' : ''}`;
+        this.element.querySelector('#participantsCount').textContent = `${count} participant${count !== 1 ? 's' : ''}`;
         
         list.innerHTML = `
             <div class="participant-item">
