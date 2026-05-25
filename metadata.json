@@ -1,6 +1,0 @@
-{
-  "name": "ROOTS MEET",
-  "description": "A full-fledged video meeting application with real-time peer-to-peer audio and video, screen sharing, and secure rooms.",
-  "requestFramePermissions": ["camera", "microphone", "display-capture"],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}
