@@ -6,42 +6,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { playSynthSound } from '../utils/audioSynth';
 
-interface ChatMessage {
-  id: string;
-  senderName: string;
-  message: string;
-  timestamp: number;
-  isSelf: boolean;
-  isFile?: boolean;
-  fileData?: {
-    name: string;
-    progress: number;
-    url?: string;
-  };
-}
 
-interface Poll {
-  id: string;
-  creatorId: string;
-  question: string;
-  options: { text: string; votes: number; voters: string[] }[];
-}
-
-interface InteractivePanelProps {
-  onClose: () => void;
-  messages: ChatMessage[];
-  chatInput: string;
-  setChatInput: (val: string) => void;
-  sendChatMessage: (e: React.FormEvent) => void;
-  fileInputRef: React.RefObject<HTMLInputElement | null>;
-  handleFileUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
-  activeUploads: Record<string, number>;
-  polls: Poll[];
-  setPolls: React.Dispatch<React.SetStateAction<Poll[]>>;
-  broadcastData: (type: string, payload: any) => void;
-  userId: string;
-  userName: string;
-}
 
 export default function InteractivePanel({
   onClose,
@@ -57,9 +22,9 @@ export default function InteractivePanel({
   broadcastData,
   userId,
   userName,
-}: InteractivePanelProps) {
-  const [activeTab, setActiveTab] = useState<'chat' | 'polls' | 'sound' | 'draw'>('chat');
-  const chatScrollRef = useRef<HTMLDivElement>(null);
+}) {
+  const [activeTab, setActiveTab] = useState('chat');
+  const chatScrollRef = useRef(null);
 
   // Poll controller states
   const [showPollCreator, setShowPollCreator] = useState(false);
@@ -67,10 +32,10 @@ export default function InteractivePanel({
   const [pollOptions, setPollOptions] = useState(['', '']);
 
   // Collaborative Drawing pad states
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const canvasRef = useRef(null);
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawColor, setDrawColor] = useState('#10B981'); // default: emerald-500
-  const lastPos = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const lastPos = useRef({ x: 0, y: 0 });
 
   const isDrawingRef = useRef(false);
   const drawColorRef = useRef(drawColor);
@@ -137,7 +102,7 @@ export default function InteractivePanel({
     observer.observe(canvas);
 
     // Direct DOM event touch handles to override browser-level standard gestures and scrolling (passive: false)
-    const handleTouchStart = (e: TouchEvent) => {
+    const handleTouchStart = (e) => {
       e.preventDefault();
       const rect = canvas.getBoundingClientRect();
       if (!e.touches || e.touches.length === 0) return;
@@ -151,7 +116,7 @@ export default function InteractivePanel({
       setIsDrawing(true);
     };
 
-    const handleTouchMove = (e: TouchEvent) => {
+    const handleTouchMove = (e) => {
       e.preventDefault();
       if (!isDrawingRef.current) return;
       const rect = canvas.getBoundingClientRect();
@@ -209,7 +174,7 @@ export default function InteractivePanel({
   }, [activeTab]);
 
   // Mouse standard drawing handlers
-  const startDrawing = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const startDrawing = (e) => {
     if (!canvasRef.current) return;
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
@@ -221,7 +186,7 @@ export default function InteractivePanel({
     setIsDrawing(true);
   };
 
-  const draw = (e: React.MouseEvent<HTMLCanvasElement>) => {
+  const draw = (e) => {
     if (!isDrawingRef.current || !canvasRef.current) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
@@ -262,17 +227,7 @@ export default function InteractivePanel({
   };
 
   // Draw other peer's lines onto canvas
-  const drawExternalSegment = (data: { 
-    x: number; 
-    y: number; 
-    lastX: number; 
-    lastY: number; 
-    rx?: number; 
-    ry?: number; 
-    rlastX?: number; 
-    rlastY?: number; 
-    color: string 
-  }) => {
+  const drawExternalSegment = (data) => {
     if (!canvasRef.current) return;
     const canvas = canvasRef.current;
     const ctx = canvas.getContext('2d');
@@ -296,14 +251,14 @@ export default function InteractivePanel({
 
   // Listen to incoming whiteboard sync events
   useEffect(() => {
-    const handleDrawMessage = (e: CustomEvent<any>) => {
+    const handleDrawMessage = (e) => {
       if (activeTab === 'draw') {
         drawExternalSegment(e.detail);
       }
     };
     
-    window.addEventListener('peer-draw', handleDrawMessage as EventListener);
-    return () => window.removeEventListener('peer-draw', handleDrawMessage as EventListener);
+    window.addEventListener('peer-draw', handleDrawMessage);
+    return () => window.removeEventListener('peer-draw', handleDrawMessage);
   }, [activeTab]);
 
   const clearCanvasLocal = () => {
@@ -329,7 +284,7 @@ export default function InteractivePanel({
   }, []);
 
   // Format timestamp helper
-  const formatTime = (ts: number) => {
+  const formatTime = (ts) => {
     const d = new Date(ts);
     return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
   };
@@ -341,7 +296,7 @@ export default function InteractivePanel({
     }
   };
 
-  const removeOptionField = (idx: number) => {
+  const removeOptionField = (idx) => {
     if (pollOptions.length > 2) {
       setPollOptions(pollOptions.filter((_, i) => i !== idx));
     }
@@ -350,7 +305,7 @@ export default function InteractivePanel({
   const createPoll = () => {
     if (!pollQuestion.trim() || pollOptions.some(opt => !opt.trim())) return;
     
-    const newPoll: Poll = {
+    const newPoll = {
       id: Math.random().toString(36).substring(2, 11),
       creatorId: userId,
       question: pollQuestion.trim(),
@@ -366,7 +321,7 @@ export default function InteractivePanel({
     setShowPollCreator(false);
   };
 
-  const votePoll = (pollId: string, optionIdx: number) => {
+  const votePoll = (pollId, optionIdx) => {
     setPolls(prev => prev.map(p => {
       if (p.id !== pollId) return p;
       
@@ -390,7 +345,7 @@ export default function InteractivePanel({
   };
 
   // Trigger synthesized soundboard effects
-  const playSfxLocalAndRemote = (soundType: string) => {
+  const playSfxLocalAndRemote = (soundType) => {
     playSynthSound(soundType);
     broadcastData('sound_trigger', { soundType, senderName: userName });
   };
@@ -417,7 +372,7 @@ export default function InteractivePanel({
             return (
               <button
                 key={tab.id}
-                onClick={() => setActiveTab(tab.id as any)}
+                onClick={() => setActiveTab(tab.id)}
                 className={`flex items-center gap-2 px-3.5 py-2.5 rounded-[18px] text-sm font-bold transition-all ${
                   isSelected 
                     ? 'bg-white/10 text-white shadow-inner scale-100' 

@@ -3,11 +3,11 @@
  * Works natively on all devices (iOS Safari, Android Chrome, Desktop) without assets.
  */
 
-let audioCtx: AudioContext | null = null;
+let audioCtx = null;
 
-function getAudioContext(): AudioContext {
+function getAudioContext() {
   if (!audioCtx) {
-    audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
   }
   if (audioCtx.state === 'suspended') {
     audioCtx.resume();
@@ -137,7 +137,7 @@ export function playPop() {
 /**
  * Play synthesizer sound based on string key
  */
-export function playSynthSound(key: string) {
+export function playSynthSound(key) {
   switch (key) {
     case 'chime': playChime(); break;
     case 'scifi': playSciFi(); break;

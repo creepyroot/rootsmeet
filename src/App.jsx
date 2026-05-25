@@ -11,9 +11,9 @@ import { motion, AnimatePresence } from 'motion/react';
 
 export default function App() {
   const [showIntro, setShowIntro] = useState(true);
-  const [roomId, setRoomId] = useState<string | null>(null);
-  const [userName, setUserName] = useState<string>('');
-  const [preJoining, setPreJoining] = useState<string | null>(null);
+  const [roomId, setRoomId] = useState(null);
+  const [userName, setUserName] = useState('');
+  const [preJoining, setPreJoining] = useState(null);
   const [initialMedia, setInitialMedia] = useState({ mic: true, video: true });
 
   useEffect(() => {
@@ -32,19 +32,19 @@ export default function App() {
     return () => clearTimeout(timer);
   }, []);
 
-  const handleCreate = (name: string) => {
+  const handleCreate = (name) => {
     setUserName(name);
     // Generate a 10 digit random room string
     const newRoom = Math.floor(1000000000 + Math.random() * 9000000000).toString();
     setPreJoining(newRoom);
   };
 
-  const startPreJoin = (id: string, name: string) => {
+  const startPreJoin = (id, name) => {
     setUserName(name);
     setPreJoining(id);
   };
 
-  const joinRoom = (mic: boolean, video: boolean) => {
+  const joinRoom = (mic, video) => {
     if (preJoining) {
       setInitialMedia({ mic, video });
       setRoomId(preJoining);

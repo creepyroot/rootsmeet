@@ -2,16 +2,9 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Mic, MicOff, Video as VidIcon, VideoOff, Settings, Sparkles } from 'lucide-react';
 import { motion } from 'motion/react';
 
-interface PreJoinScreenProps {
-  roomId: string;
-  userName: string;
-  onJoin: (micEnabled: boolean, videoEnabled: boolean) => void;
-  onCancel: () => void;
-}
-
-export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }: PreJoinScreenProps) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const [stream, setStream] = useState<MediaStream | null>(null);
+export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }) {
+  const videoRef = useRef(null);
+  const [stream, setStream] = useState(null);
   const [micEnabled, setMicEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
   const [error, setError] = useState('');
@@ -21,7 +14,7 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }: Pr
 
   useEffect(() => {
     let cancelled = false;
-    let activeStream: MediaStream | null = null;
+    let activeStream = null;
     
     const initPreview = async () => {
       if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
@@ -33,7 +26,7 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }: Pr
         return;
       }
 
-      const getMediaStream = async (): Promise<MediaStream> => {
+      const getMediaStream = async () => {
         const videoConstraint = { 
           width: { ideal: 1280 }, 
           height: { ideal: 720 },
@@ -208,7 +201,7 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }: Pr
     onJoin(micEnabled, videoEnabled);
   };
 
-  const getInitials = (nameString: string) => {
+  const getInitials = (nameString) => {
     const parts = nameString.trim().split(/\s+/);
     if (!parts.length || !parts[0]) return 'M';
     if (parts.length === 1) return parts[0].substring(0, 2).toUpperCase();

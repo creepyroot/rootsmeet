@@ -4,52 +4,16 @@ import { Mic, MicOff, Video as VidIcon, VideoOff, PhoneOff, MonitorUp, Users, Co
 import { motion, AnimatePresence } from 'motion/react';
 import InteractivePanel from './InteractivePanel';
 
-interface RoomScreenProps {
-  roomId: string;
-  userName?: string;
-  onLeave: () => void;
-  initialMedia?: { mic: boolean, video: boolean };
-}
-
-interface ChatMessage {
-  id: string;
-  sender: string;
-  senderName: string;
-  message: string;
-  timestamp: number;
-  isSelf: boolean;
-  isFile?: boolean;
-  fileData?: {
-    id: string;
-    name: string;
-    progress: number;
-    url?: string;
-  }
-}
-
-interface Reaction {
-  id: string;
-  userId: string;
-  emoji: string;
-}
-
-interface Transcription {
-  id: string;
-  senderName: string;
-  text: string;
-  timestamp: number;
-}
-
-export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initialMedia }: RoomScreenProps) {
-  const [peers, setPeers] = useState<{ id: string, stream: MediaStream, name?: string }[]>([]);
-  const peerRef = useRef<Peer | null>(null);
-  const dataConnections = useRef<Map<string, DataConnection>>(new Map());
-  const mediaConnections = useRef<Map<string, MediaConnection>>(new Map());
+export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initialMedia }) {
+  const [peers, setPeers] = useState([]);
+  const peerRef = useRef(null);
+  const dataConnections = useRef(new Map());
+  const mediaConnections = useRef(new Map());
   
-  const userVideo = useRef<HTMLVideoElement>(null);
-  const streamRef = useRef<MediaStream | null>(null);
-  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const userVideo = useRef(null);
+  const streamRef = useRef(null);
+  const [localStream, setLocalStream] = useState(null);
+  const mediaRecorderRef = useRef(null);
   
   const [isHost, setIsHost] = useState(false);
   const [isReady, setIsReady] = useState(false);
@@ -59,25 +23,25 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [showCaptions, setShowCaptions] = useState(true);
-  const [transcriptions, setTranscriptions] = useState<Transcription[]>([]);
-  const recognitionRef = useRef<any>(null);
+  const [transcriptions, setTranscriptions] = useState([]);
+  const recognitionRef = useRef(null);
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
-  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [messages, setMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [unreadCount, setUnreadCount] = useState(0);
   const chatScrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [handRaised, setHandRaised] = useState(false);
-  const [raisedHands, setRaisedHands] = useState<Set<string>>(new Set());
-  const [reactions, setReactions] = useState<Reaction[]>([]);
+  const [raisedHands, setRaisedHands] = useState(new Set());
+  const [reactions, setReactions] = useState([]);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
   
-  const [activeUploads, setActiveUploads] = useState<Record<string, number>>({});
-  const filesRef = useRef<Record<string, { name: string, total: number, received: number, chunks: any[], complete: boolean, url?: string }>>({});
+  const [activeUploads, setActiveUploads] = useState({});
+  const filesRef = useRef({});
 
-  const [polls, setPolls] = useState<{ id: string, creatorId: string, question: string, options: { text: string, votes: number, voters: string[] }[] }[]>([]);
+  const [polls, setPolls] = useState([]);
 
   const showChatRef = useRef(showChat);
 
@@ -86,10 +50,10 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   }, [showChat]);
 
   // Handle incoming data messages
-  const handleDataMessage = useCallback((senderId: string, data: any) => {
+  const handleDataMessage = useCallback((senderId, data) => {
     if (data.type === 'peer-list' && isHost === false) {
       // Connect to other peers in the room
-      const existingPeers = data.peers as string[];
+      const existingPeers = data.peers;
       existingPeers.forEach(peerId => {
         if (peerId !== peerRef.current?.id && !mediaConnections.current.has(peerId)) {
           connectToPeer(peerId, streamRef.current);
@@ -187,21 +151,21 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         playSynthSound(soundType);
       });
       // Temporarily display an animated reaction corresponding to the triggered sound!
-      const emojis: Record<string, string> = { chime: '🔔', ding: '🛎️', scifi: '⚡', pop: '🧼' };
+      const emojis = { chime: '🔔', ding: '🛎️', scifi: '⚡', pop: '🧼' };
       const reactionId = Math.random().toString();
       setReactions(prev => [...prev, { id: reactionId, userId: senderId, emoji: emojis[soundType] || '🔊' }]);
       setTimeout(() => setReactions(prev => prev.filter(r => r.id !== reactionId)), 3000);
     }
   }, [isHost]);
 
-  const broadcastData = (type: string, payload: any) => {
+  const broadcastData = (type, payload) => {
     const message = { type, payload };
     dataConnections.current.forEach(conn => {
       if (conn.open) conn.send(message);
     });
   };
 
-  const setupDataConnection = useCallback((conn: DataConnection) => {
+  const setupDataConnection = useCallback((conn) => {
     conn.on('open', () => {
       if (isHost && peerRef.current) {
         // Send list of all existing peers to new joiner
@@ -209,7 +173,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         conn.send({ type: 'peer-list', peers: peerList });
       }
     });
-    conn.on('data', (data: any) => {
+    conn.on('data', (data) => {
       handleDataMessage(conn.peer, data);
     });
     conn.on('close', () => {
@@ -217,7 +181,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     });
   }, [isHost, handleDataMessage]);
 
-  const connectToPeer = useCallback((peerId: string, stream: MediaStream | null) => {
+  const connectToPeer = useCallback((peerId, stream) => {
     if (!peerRef.current) return;
     
     // Connect Data
@@ -256,7 +220,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   }, [localStream, isReady]);
 
   useEffect(() => {
-    let currentPeer: Peer | null = null;
+    let currentPeer = null;
     let cancelled = false;
 
     const initMediaAndPeer = async () => {
@@ -264,9 +228,9 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       await new Promise(resolve => setTimeout(resolve, 500));
       if (cancelled) return;
 
-      let stream: MediaStream | null = null;
+      let stream = null;
       
-      const getMediaStream = async (): Promise<MediaStream> => {
+      const getMediaStream = async () => {
         const videoConstraint = initialMedia?.video !== false ? { 
           width: { ideal: 1280 }, 
           height: { ideal: 720 }, 
@@ -383,7 +347,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
 
       const roomPeerId = `pure-meet-room-${roomId}`;
       
-      const setupPeerHandlers = (p: Peer) => {
+      const setupPeerHandlers = (p) => {
         p.on('open', (id) => {
           setIsReady(true);
           
@@ -478,12 +442,12 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     initMediaAndPeer();
 
     // Setup Speech Recognition
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     if (SpeechRecognition) {
       const recognition = new SpeechRecognition();
       recognition.continuous = true;
       recognition.interimResults = false;
-      recognition.onresult = (event: any) => {
+      recognition.onresult = (event) => {
         const last = event.results.length - 1;
         const text = event.results[last][0].transcript;
         if (text.trim() && peerRef.current) {
@@ -555,7 +519,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
                 if (sender) {
                   sender.replaceTrack(newTrack);
                 } else {
-                  pc.addTrack(newTrack, streamRef.current!);
+                  pc.addTrack(newTrack, streamRef.current);
                 }
               }
             });
@@ -593,7 +557,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
                 if (sender) {
                   sender.replaceTrack(newTrack);
                 } else {
-                  pc.addTrack(newTrack, streamRef.current!);
+                  pc.addTrack(newTrack, streamRef.current);
                 }
               }
             });
@@ -613,7 +577,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   const toggleScreenShare = async () => {
     if (!isScreenSharing) {
       try {
-        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true } as any);
+        const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
         const screenTrack = screenStream.getVideoTracks()[0];
         
         mediaConnections.current.forEach(call => {
@@ -626,7 +590,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         screenTrack.onended = () => stopScreenShare();
         if (userVideo.current) userVideo.current.srcObject = screenStream;
         setIsScreenSharing(true);
-      } catch (err: any) {
+      } catch (err) {
         if (err.name === 'NotAllowedError' || err.message?.includes('current context')) {
           alert('Screen sharing is blocked in this preview window.\n\nPlease open the application in a new tab (using the ↗ icon at the top right) to use Screen Sharing.');
         } else {
@@ -660,9 +624,9 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     }
     try {
       // 1. Set up audio context mixing for ALL participant audio streams
-      let audioCtx: AudioContext | null = null;
-      let dest: MediaStreamAudioDestinationNode | null = null;
-      const AudioCtxClass = (window as any).AudioContext || (window as any).webkitAudioContext;
+      let audioCtx = null;
+      let dest = null;
+      const AudioCtxClass = window.AudioContext || window.webkitAudioContext;
       
       if (AudioCtxClass) {
         try {
@@ -711,7 +675,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         
         // Select all active participant cards (handles offline standbys as well)
-        const cards = Array.from(document.querySelectorAll('main [data-participant-card="true"]')) as HTMLDivElement[];
+        const cards = Array.from(document.querySelectorAll('main [data-participant-card="true"]'));
         const count = cards.length;
         
         if (count > 0) {
@@ -740,7 +704,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
             
             const pName = card.getAttribute('data-name') || `Participant ${index + 1}`;
             const isVideoOffAttr = card.getAttribute('data-video-off') === 'true';
-            const video = card.querySelector('video') as HTMLVideoElement | null;
+            const video = card.querySelector('video');
             
             // Draw a subtle quadrant framing
             ctx.strokeStyle = '#1E1E24';
@@ -893,13 +857,13 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       }
 
       // Standard portable mimetype support for WebM video in modern browsers
-      let recorderOptions: MediaRecorderOptions = { mimeType: 'video/webm' };
+      let recorderOptions = { mimeType: 'video/webm' };
       if (MediaRecorder.isTypeSupported('video/webm;codecs=vp8,opus')) {
         recorderOptions = { mimeType: 'video/webm;codecs=vp8,opus' };
       }
 
       const recorder = new MediaRecorder(combinedStream, recorderOptions);
-      const chunks: Blob[] = [];
+      const chunks = [];
       
       recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
       
@@ -925,7 +889,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       recorder.start(1000);
       mediaRecorderRef.current = recorder;
       setIsRecording(true);
-    } catch (err: any) {
+    } catch (err) {
       alert(`Failed to start recording: ${err.message || err}`);
     }
   };
@@ -936,7 +900,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     broadcastData('raise-hand', { isRaised: newRaised });
   };
 
-  const sendReaction = (emoji: string) => {
+  const sendReaction = (emoji) => {
     broadcastData('reaction', { emoji });
     setShowEmojiPicker(false);
     const reactionId = Math.random().toString();
@@ -944,7 +908,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     setTimeout(() => setReactions(prev => prev.filter(r => r.id !== reactionId)), 3000);
   };
 
-  const sendChatMessage = (e: React.FormEvent) => {
+  const sendChatMessage = (e) => {
     e.preventDefault();
     if (!chatInput.trim() || !peerRef.current) return;
     
@@ -961,7 +925,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     setChatInput('');
   };
 
-  const handleFileUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileUpload = (e) => {
     const file = e.target.files?.[0];
     if (!file || !peerRef.current) return;
 
@@ -1026,7 +990,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     setTimeout(() => setCopied(false), 2000);
   };
 
-  let formatTime = (ts: number) => {
+  let formatTime = (ts) => {
     const d = new Date(ts);
     return d.getHours().toString().padStart(2, '0') + ':' + d.getMinutes().toString().padStart(2, '0');
   }
@@ -1231,7 +1195,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
           {showChat && peerRef.current && (
             <InteractivePanel
               onClose={() => setShowChat(false)}
-              messages={messages as any}
+              messages={messages}
               chatInput={chatInput}
               setChatInput={setChatInput}
               sendChatMessage={sendChatMessage}
@@ -1239,7 +1203,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
               handleFileUpload={handleFileUpload}
               activeUploads={activeUploads}
               polls={polls}
-              setPolls={setPolls as any}
+              setPolls={setPolls}
               broadcastData={broadcastData}
               userId={peerRef.current.id}
               userName={userName}
@@ -1351,16 +1315,8 @@ const PeerVideo = ({
   peerReactions,
   isHostPOV,
   onKick
-}: { 
-  stream: MediaStream, 
-  peerID: string, 
-  isHandRaised: boolean, 
-  peerReactions: Reaction[],
-  isHostPOV?: boolean,
-  onKick?: () => void,
-  key?: any
 }) => {
-  const ref = useRef<HTMLVideoElement>(null);
+  const ref = useRef(null);
   const squircle = "rounded-[24px]";
   const minorSquircle = "rounded-[20px]";
   const [hasVideo, setHasVideo] = useState(stream.getVideoTracks().filter(t => t.enabled).length > 0);
@@ -1491,8 +1447,8 @@ const PeerVideo = ({
   );
 };
 
-const AudioVisualizer = ({ stream }: { stream: MediaStream | null }) => {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+const AudioVisualizer = ({ stream }) => {
+  const canvasRef = useRef(null);
   
   useEffect(() => {
     if (!stream || !canvasRef.current || !window.AudioContext) return;
@@ -1502,13 +1458,13 @@ const AudioVisualizer = ({ stream }: { stream: MediaStream | null }) => {
       return; 
     }
 
-    let audioContext: AudioContext;
-    let analyser: AnalyserNode;
-    let source: MediaStreamAudioSourceNode;
-    let animationFrameId: number;
+    let audioContext;
+    let analyser;
+    let source;
+    let animationFrameId;
 
     try {
-      audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+      audioContext = new (window.AudioContext || window.webkitAudioContext)();
       analyser = audioContext.createAnalyser();
       source = audioContext.createMediaStreamSource(stream);
       source.connect(analyser);

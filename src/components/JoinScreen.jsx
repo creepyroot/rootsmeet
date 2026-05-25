@@ -2,22 +2,16 @@ import React, { useState, useEffect } from 'react';
 import { Video, Keyboard, ArrowRight, User, Sparkles, Globe2, Shield, Zap } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
-interface JoinScreenProps {
-  onJoin: (roomId: string, name: string) => void;
-  onCreate: (name: string) => void;
-  forcedRoomId?: string;
-}
-
-export default function JoinScreen({ onJoin, onCreate, forcedRoomId }: JoinScreenProps) {
+export default function JoinScreen({ onJoin, onCreate, forcedRoomId }) {
   const [roomId, setRoomId] = useState(forcedRoomId || '');
   const [userName, setUserName] = useState('');
-  const [hovered, setHovered] = useState<string | null>(null);
+  const [hovered, setHovered] = useState(null);
 
   useEffect(() => {
     if (forcedRoomId) setRoomId(forcedRoomId);
   }, [forcedRoomId]);
 
-  const handleJoin = (e: React.FormEvent) => {
+  const handleJoin = (e) => {
     e.preventDefault();
     if (roomId.trim() && userName.trim()) onJoin(roomId.trim(), userName.trim());
   };
