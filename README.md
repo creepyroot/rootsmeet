@@ -1,20 +1,80 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://ai.google.dev/static/site-assets/images/share-ais-513315318.png" />
-</div>
+# ROOTS PROJECT - Cinematic Video Meetings
 
-# Run and deploy your AI Studio app
+A beautiful, peer-to-peer video meeting application built with pure vanilla JavaScript.
 
-This contains everything you need to run your app locally.
+## Features
 
-View your app in AI Studio: https://ai.studio/apps/b2f5d10d-a255-4b09-8cbb-4d8a66932352
+- 🎬 **Cinematic UI** - Beautiful dark theme with emerald accents and smooth animations
+- 🔒 **Peer-to-Peer Encrypted** - Direct WebRTC connections between participants
+- ⚡ **Lightning Fast** - Zero-latency connections with no server relay
+- 📹 **HD Video** - Crystal clear video quality
+- 💬 **Real-time Chat** - In-meeting text messaging
+- 👋 **Reactions** - Send emoji reactions during meetings
+- 🖐️ **Raise Hand** - Non-verbal participation
+- 📱 **Responsive** - Works on all devices
 
-## Run Locally
+## File Structure
 
-**Prerequisites:**  Node.js
+```
+/
+├── index.html              # Main HTML entry point
+├── style.css               # All styles (1800+ lines)
+├── src/
+│   ├── core/
+│   │   ├── state.js        # Global state management
+│   │   └── app.js          # Main application controller
+│   ├── utils/
+│   │   ├── helpers.js      # Utility functions
+│   │   └── media.js        # Media handling utilities
+│   └── components/
+│       ├── intro.js        # Intro screen component
+│       ├── join.js         # Join screen component
+│       ├── prejoin.js      # Pre-join screen component
+│       └── room.js         # Meeting room component
+└── README.md
+```
 
+## Deployment to GitHub Pages
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+1. Push this repository to GitHub
+2. Go to Settings → Pages
+3. Select "Deploy from a branch"
+4. Choose the main branch and root folder
+5. Click Save
+
+Your site will be live at `https://yourusername.github.io/repository-name`
+
+## Local Development
+
+Simply open `index.html` in a modern browser. Note that for full functionality (camera/microphone access), you need to serve it over HTTPS or localhost.
+
+You can use any local server:
+```bash
+# Python 3
+python -m http.server 8000
+
+# Node.js (npx)
+npx serve .
+
+# PHP
+php -S localhost:8000
+```
+
+## Technology Stack
+
+- **Pure Vanilla JavaScript** - No frameworks, no build tools
+- **WebRTC** - Peer-to-peer video/audio
+- **PeerJS** - Simplified WebRTC API
+- **CSS3** - Modern animations and effects
+- **Google Fonts** - Inter and JetBrains Mono
+
+## Browser Support
+
+- Chrome/Edge (recommended)
+- Firefox
+- Safari
+- Opera
+
+## License
+
+MIT License - Feel free to use and modify!
