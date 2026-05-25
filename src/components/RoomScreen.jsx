@@ -201,7 +201,8 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         const isVideoCurrentlyOff = streamRef.current.getVideoTracks().length > 0
           ? !streamRef.current.getVideoTracks()[0].enabled
           : handlersRef.current.isVideoOff;
-        broadcastData('media-state', { isVideoOff: isVideoCurrentlyOff, isMuted: true });
+        const msg = { type: 'media-state', payload: { isVideoOff: isVideoCurrentlyOff, isMuted: true } };
+        dataConnections.current.forEach(c => { if(c.open) c.send(msg); });
       }
     } else if (data.type === 'force-video-off') {
       if (streamRef.current) {
@@ -210,7 +211,8 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         const isAudioCurrentlyMuted = streamRef.current.getAudioTracks().length > 0
           ? !streamRef.current.getAudioTracks()[0].enabled
           : handlersRef.current.isMuted;
-        broadcastData('media-state', { isVideoOff: true, isMuted: isAudioCurrentlyMuted });
+        const msg = { type: 'media-state', payload: { isVideoOff: true, isMuted: isAudioCurrentlyMuted } };
+        dataConnections.current.forEach(c => { if(c.open) c.send(msg); });
       }
     } else if (data.type === 'force-kick') {
       alert("You have been removed from the meeting by the host.");
@@ -1418,7 +1420,13 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
             <div className={`w-8 h-8 ${minorSquircle} bg-slate-800 flex items-center justify-center shadow-inner`}>
               <VidIcon className="w-4 h-4 text-white" />
             </div>
-            <h2 className="font-semibold text-[15px] hidden sm:block tracking-wide">Meeting <span className="text-slate-400 font-normal ml-2">{roomId}</span></h2>
+            <h2 className="font-semibold text-[15px] hidden sm:flex items-center gap-3 tracking-wide">
+              <span>Meeting <span className="text-slate-400 font-normal ml-1">{roomId}</span></span>
+              <div className="flex items-center gap-1.5 px-2 py-0.5 bg-slate-800 rounded-full border border-slate-700 text-xs text-slate-300">
+                <Users className="w-3.5 h-3.5" />
+                {peers.length + 1}
+              </div>
+            </h2>
           </div>
           {isRecording && (
             <div className="flex items-center gap-1.5 px-2.5 py-1 bg-red-500/10 text-red-500 rounded-full border border-red-500/20 text-xs font-semibold animate-pulse">
