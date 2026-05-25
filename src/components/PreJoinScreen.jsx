@@ -229,7 +229,7 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }) {
               autoPlay 
               muted 
               playsInline 
-              className="w-full h-full object-cover -scale-x-100" 
+              className="w-full h-full object-cover" 
             />
           ) : (
             <div className="relative flex flex-col items-center justify-center w-full h-full overflow-hidden bg-[#09090C]">

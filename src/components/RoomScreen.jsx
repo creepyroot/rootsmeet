@@ -9,6 +9,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   const peerRef = useRef(null);
   const dataConnections = useRef(new Map());
   const mediaConnections = useRef(new Map());
+  const outboundCalls = useRef(new Set());
   
   const userVideo = useRef(null);
   const streamRef = useRef(null);
@@ -17,6 +18,10 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   
   const [isHost, setIsHost] = useState(false);
   const [isReady, setIsReady] = useState(false);
+  const [slotIndex, setSlotIndex] = useState(null);
+  const [peerNames, setPeerNames] = useState({});
+  const [peerVideoOff, setPeerVideoOff] = useState({});
+  const [peerMuted, setPeerMuted] = useState({});
   
   const [isMuted, setIsMuted] = useState(initialMedia ? !initialMedia.mic : false);
   const [isVideoOff, setIsVideoOff] = useState(initialMedia ? !initialMedia.video : false);
@@ -28,10 +33,9 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   const [copied, setCopied] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [messages, setMessages] = useState([]);
-  const [chatInput, setChatInput] = useState('');
   const [unreadCount, setUnreadCount] = useState(0);
-  const chatScrollRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const chatScrollRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const [handRaised, setHandRaised] = useState(false);
   const [raisedHands, setRaisedHands] = useState(new Set());
@@ -49,16 +53,48 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     showChatRef.current = showChat;
   }, [showChat]);
 
+  // Store all handlers & fresh state variables in a stable ref to prevent closure and initialization issues
+  const handlersRef = useRef({
+    handleDataMessage: null,
+    setupDataConnection: null,
+    connectToPeer: null,
+    isHost: false,
+    userName: 'Guest',
+    roomId: '',
+    onLeave: null
+  });
+
+  // Keep these values fresh on every single render cycle
+  handlersRef.current.isHost = isHost;
+  handlersRef.current.userName = userName;
+  handlersRef.current.roomId = roomId;
+  handlersRef.current.onLeave = onLeave;
+  handlersRef.current.isVideoOff = isVideoOff;
+  handlersRef.current.isMuted = isMuted;
+
   // Handle incoming data messages
   const handleDataMessage = useCallback((senderId, data) => {
-    if (data.type === 'peer-list' && isHost === false) {
+    if (data.type === 'identity') {
+      setPeerNames(prev => ({ ...prev, [senderId]: data.payload.userName }));
+      if (data.payload.isVideoOff !== undefined) {
+        setPeerVideoOff(prev => ({ ...prev, [senderId]: data.payload.isVideoOff }));
+      }
+      if (data.payload.isMuted !== undefined) {
+        setPeerMuted(prev => ({ ...prev, [senderId]: data.payload.isMuted }));
+      }
+    } else if (data.type === 'media-state') {
+      if (data.payload.isVideoOff !== undefined) {
+        setPeerVideoOff(prev => ({ ...prev, [senderId]: data.payload.isVideoOff }));
+      }
+      if (data.payload.isMuted !== undefined) {
+        setPeerMuted(prev => ({ ...prev, [senderId]: data.payload.isMuted }));
+      }
+    } else if (data.type === 'peer-list' && !handlersRef.current.isHost) {
       // Connect to other peers in the room
       const existingPeers = data.peers;
-      console.log('Received peer list from host:', existingPeers);
       existingPeers.forEach(peerId => {
         if (peerId !== peerRef.current?.id && !mediaConnections.current.has(peerId)) {
-          console.log('Connecting to peer from list:', peerId);
-          connectToPeer(peerId, streamRef.current);
+          handlersRef.current.connectToPeer?.(peerId, streamRef.current);
         }
       });
     } else if (data.type === 'chat') {
@@ -126,6 +162,11 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         streamRef.current.getVideoTracks().forEach(t => t.enabled = false);
         setIsVideoOff(true);
       }
+    } else if (data.type === 'force-kick') {
+      alert("You have been removed from the meeting by the host.");
+      if (handlersRef.current.onLeave) {
+        handlersRef.current.onLeave();
+      }
     } else if (data.type === 'poll_create') {
       setPolls(prev => [...prev, data.payload]);
     } else if (data.type === 'poll_vote') {
@@ -158,7 +199,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       setReactions(prev => [...prev, { id: reactionId, userId: senderId, emoji: emojis[soundType] || '🔊' }]);
       setTimeout(() => setReactions(prev => prev.filter(r => r.id !== reactionId)), 3000);
     }
-  }, [isHost]);
+  }, []);
 
   const broadcastData = (type, payload) => {
     const message = { type, payload };
@@ -169,27 +210,28 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
 
   const setupDataConnection = useCallback((conn) => {
     conn.on('open', () => {
-      // Delay sending peer-list to ensure connection is fully established
-      setTimeout(() => {
-        if (isHost && peerRef.current) {
-          // Send list of all existing peers to new joiner
-          const peerList = Array.from(mediaConnections.current.keys()).filter(id => id !== conn.peer);
-          if (peerList.length > 0) {
-            conn.send({ type: 'peer-list', peers: peerList });
-          }
+      conn.send({
+        type: 'identity',
+        payload: { 
+          userName: handlersRef.current.userName,
+          isVideoOff: handlersRef.current.isVideoOff,
+          isMuted: handlersRef.current.isMuted
         }
-      }, 500);
+      });
+      
+      // reciprocal call on data connection opening:
+      if (streamRef.current && !outboundCalls.current.has(conn.peer)) {
+        console.log("[Peer] Reciprocating outbound call on data open to:", conn.peer);
+        handlersRef.current.connectToPeer?.(conn.peer, streamRef.current);
+      }
     });
     conn.on('data', (data) => {
-      handleDataMessage(conn.peer, data);
+      handlersRef.current.handleDataMessage?.(conn.peer, data);
     });
     conn.on('close', () => {
       dataConnections.current.delete(conn.peer);
     });
-    conn.on('error', (err) => {
-      console.warn("Data connection error:", err);
-    });
-  }, [isHost, handleDataMessage]);
+  }, []);
 
   const connectToPeer = useCallback((peerId, stream) => {
     if (!peerRef.current) return;
@@ -198,35 +240,46 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     if (!dataConnections.current.has(peerId)) {
       const dataConn = peerRef.current.connect(peerId);
       dataConnections.current.set(peerId, dataConn);
-      setupDataConnection(dataConn);
+      handlersRef.current.setupDataConnection?.(dataConn);
     }
     
-    // Connect Media - always try to establish media connection with stream
-    if (!mediaConnections.current.has(peerId)) {
-       const call = peerRef.current.call(peerId, stream);
-       mediaConnections.current.set(peerId, call);
-       
-       call.on('stream', (userVideoStream) => {
-         setPeers(prev => {
-           if (prev.find(p => p.id === peerId)) return prev;
-           return [...prev, { id: peerId, stream: userVideoStream }];
-         });
-       });
-       
-       call.on('close', () => {
-         mediaConnections.current.delete(peerId);
-         setPeers(prev => prev.filter(p => p.id !== peerId));
-       });
-       
-       call.on('error', (err) => {
-         console.warn("Media call error:", err);
-       });
+    // Connect Media
+    if (stream) {
+       outboundCalls.current.add(peerId);
+       if (!mediaConnections.current.has(peerId)) {
+          console.log("[Peer] Initiating outbound call to:", peerId);
+          const call = peerRef.current.call(peerId, stream);
+          mediaConnections.current.set(peerId, call);
+          
+          call.on('stream', (userVideoStream) => {
+            console.log("[Peer] Stream received from outbound call to:", peerId);
+            setPeers(prev => {
+              if (prev.find(p => p.id === peerId)) {
+                return prev.map(p => p.id === peerId ? { ...p, stream: userVideoStream } : p);
+              }
+              return [...prev, { id: peerId, stream: userVideoStream }];
+            });
+          });
+          
+          call.on('close', () => {
+            mediaConnections.current.delete(peerId);
+            outboundCalls.current.delete(peerId);
+            setPeers(prev => prev.filter(p => p.id !== peerId));
+          });
+       }
     }
-  }, [setupDataConnection]);
+  }, []);
+
+  // Synchronously wire up the latest functions to the stable handlersRef
+  handlersRef.current.handleDataMessage = handleDataMessage;
+  handlersRef.current.setupDataConnection = setupDataConnection;
+  handlersRef.current.connectToPeer = connectToPeer;
 
   useEffect(() => {
     if (userVideo.current && localStream) {
-      userVideo.current.srcObject = localStream;
+      if (userVideo.current.srcObject !== localStream) {
+        userVideo.current.srcObject = localStream;
+      }
       userVideo.current.play().catch(err => {
         console.warn("Local video play failed on mount/update:", err);
       });
@@ -245,17 +298,17 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       let stream = null;
       
       const getMediaStream = async () => {
-        const videoConstraint = initialMedia?.video !== false ? { 
+        const videoConstraint = { 
           width: { ideal: 1280 }, 
           height: { ideal: 720 }, 
           facingMode: 'user' 
-        } : false;
+        };
 
         // Try 1: Try both mic and video (with ideal video spec)
         try {
           const s = await navigator.mediaDevices.getUserMedia({
             video: videoConstraint,
-            audio: initialMedia?.mic !== false
+            audio: true
           });
           if (cancelled) {
             s.getTracks().forEach(t => t.stop());
@@ -268,8 +321,8 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         // Try 2: Try both mic and video (standard/simple video spec)
         try {
           const s = await navigator.mediaDevices.getUserMedia({
-            video: initialMedia?.video !== false,
-            audio: initialMedia?.mic !== false
+            video: true,
+            audio: true
           });
           if (cancelled) {
             s.getTracks().forEach(t => t.stop());
@@ -280,72 +333,78 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         }
 
         // Try 3: Try video only (ideal spec)
-        if (initialMedia?.video !== false) {
-          try {
-            const vs = await navigator.mediaDevices.getUserMedia({
-              video: videoConstraint,
-              audio: false
-            });
-            if (cancelled) {
-              vs.getTracks().forEach(t => t.stop());
-            }
-            setIsMuted(true); // Since mic failed or is disabled
-            return vs;
-          } catch (e) {
-            console.warn("Try 3 failed (video ideal only):", e);
+        try {
+          const vs = await navigator.mediaDevices.getUserMedia({
+            video: videoConstraint,
+            audio: false
+          });
+          if (cancelled) {
+            vs.getTracks().forEach(t => t.stop());
           }
+          return vs;
+        } catch (e) {
+          console.warn("Try 3 failed (video ideal only):", e);
+        }
 
-          // Try 4: Try video only (simple spec)
-          try {
-            const vs = await navigator.mediaDevices.getUserMedia({
-              video: true,
-              audio: false
-            });
-            if (cancelled) {
-              vs.getTracks().forEach(t => t.stop());
-            }
-            setIsMuted(true);
-            return vs;
-          } catch (e) {
-            console.warn("Try 4 failed (video simple only):", e);
+        // Try 4: Try video only (simple spec)
+        try {
+          const vs = await navigator.mediaDevices.getUserMedia({
+            video: true,
+            audio: false
+          });
+          if (cancelled) {
+            vs.getTracks().forEach(t => t.stop());
           }
+          return vs;
+        } catch (e) {
+          console.warn("Try 4 failed (video simple only):", e);
         }
 
         // Try 5: Try audio only
-        if (initialMedia?.mic !== false) {
-          try {
-            const as = await navigator.mediaDevices.getUserMedia({
-              video: false,
-              audio: true
-            });
-            if (cancelled) {
-              as.getTracks().forEach(t => t.stop());
-            }
-            setIsVideoOff(true);
-            return as;
-          } catch (e) {
-            console.warn("Try 5 failed (audio only):", e);
+        try {
+          const as = await navigator.mediaDevices.getUserMedia({
+            video: false,
+            audio: true
+          });
+          if (cancelled) {
+            as.getTracks().forEach(t => t.stop());
           }
+          return as;
+        } catch (e) {
+          console.warn("Try 5 failed (audio only):", e);
         }
 
         // Fallback: Empty stream
-        setIsVideoOff(true);
-        setIsMuted(true);
         return new MediaStream();
       };
 
       if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         console.warn("navigator.mediaDevices is not available in this context.");
-        setIsVideoOff(true);
-        setIsMuted(true);
         stream = new MediaStream();
       } else {
         stream = await getMediaStream();
       }
 
-      if (initialMedia?.mic === false && stream) {
-        stream.getAudioTracks().forEach(t => t.enabled = false);
+      if (cancelled) {
+        if (stream) stream.getTracks().forEach(t => t.stop());
+        return;
       }
+
+      // Apply initial state to tracks immediately to avoid WebRTC stream renegotiations later!
+      const initialVideoEnabled = initialMedia?.video !== false;
+      const initialAudioEnabled = initialMedia?.mic !== false;
+
+      if (stream) {
+        stream.getVideoTracks().forEach(t => {
+          t.enabled = initialVideoEnabled;
+        });
+        stream.getAudioTracks().forEach(t => {
+          t.enabled = initialAudioEnabled;
+        });
+      }
+
+      setIsVideoOff(!initialVideoEnabled);
+      setIsMuted(!initialAudioEnabled);
 
       if (cancelled) {
         if (stream) stream.getTracks().forEach(t => t.stop());
@@ -355,48 +414,40 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       streamRef.current = stream;
       setLocalStream(stream);
       setIsReady(true);
-      if (userVideo.current) {
-        userVideo.current.srcObject = stream;
-      }
 
-      const roomPeerId = `pure-meet-room-${roomId}`;
-      
-      const setupPeerHandlers = (p) => {
-        p.on('open', (id) => {
-          setIsReady(true);
-          
-          if (id !== roomPeerId) {
-            // We are guest, connect to host
-            connectToPeer(roomPeerId, stream);
-          }
-        });
+      const setupPeerHandlers = (p, myIndex) => {
+        // Higher-index slots connect to lower-index slots
+        for (let i = 0; i < myIndex; i++) {
+          const targetSlotId = `pure-meet-${roomId}-${i}`;
+          handlersRef.current.connectToPeer?.(targetSlotId, stream);
+        }
 
         p.on('connection', (conn) => {
-          // Only set up if not already connected
-          if (!dataConnections.current.has(conn.peer)) {
-            dataConnections.current.set(conn.peer, conn);
-            setupDataConnection(conn);
-          }
+          dataConnections.current.set(conn.peer, conn);
+          handlersRef.current.setupDataConnection?.(conn);
         });
 
         p.on('call', (call) => {
-          // Only answer if not already in a media connection with this peer
-          if (!mediaConnections.current.has(call.peer)) {
-            mediaConnections.current.set(call.peer, call);
-            call.answer(streamRef.current || undefined);
-            call.on('stream', (userVideoStream) => {
-              setPeers(prev => {
-                if (prev.find(peer => peer.id === call.peer)) return prev;
-                return [...prev, { id: call.peer, stream: userVideoStream }];
-              });
+          mediaConnections.current.set(call.peer, call);
+          call.answer(streamRef.current || undefined);
+          call.on('stream', (userVideoStream) => {
+            console.log("[Peer] Received stream on inbound call from:", call.peer);
+            setPeers(prev => {
+              if (prev.find(peer => peer.id === call.peer)) {
+                return prev.map(p => p.id === call.peer ? { ...p, stream: userVideoStream } : p);
+              }
+              return [...prev, { id: call.peer, stream: userVideoStream }];
             });
-            call.on('close', () => {
-               mediaConnections.current.delete(call.peer);
-               setPeers(prev => prev.filter(peer => peer.id !== call.peer));
-            });
-            call.on('error', (err) => {
-              console.warn("Incoming call error:", err);
-            });
+          });
+          call.on('close', () => {
+             mediaConnections.current.delete(call.peer);
+             setPeers(prev => prev.filter(peer => peer.id !== call.peer));
+          });
+
+          // reciprocal outbound call if not already dialing outbound:
+          if (streamRef.current && !outboundCalls.current.has(call.peer)) {
+            console.log("[Peer] Reciprocating outbound call on inbound call from:", call.peer);
+            handlersRef.current.connectToPeer?.(call.peer, streamRef.current);
           }
         });
         
@@ -425,41 +476,43 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         }
       };
 
-      // Try forming as Host
-      const tryHost = new Peer(roomPeerId, peerOptions);
-      peerRef.current = tryHost; // Assign immediately to allow instant cleanup!
-
-      tryHost.on('open', (id) => {
-        if (cancelled) {
-          tryHost.destroy();
+      const trySlot = (index) => {
+        if (index >= 10) {
+          alert("This meeting room is full. (Maximum 10 participants)");
+          onLeave();
           return;
         }
-        setIsHost(true);
-        setupPeerHandlers(tryHost);
-      });
 
-      tryHost.on('error', (err) => {
-        if (cancelled) return;
-        if (err.type === 'unavailable-id') {
-          // Room exists, join as guest safely in next tick to avoid crashing PeerJS internal event loop
-          setTimeout(() => {
-            if (cancelled) return;
-            try { 
-              tryHost.destroy(); 
-            } catch (e) {
-              console.warn("PeerJS tryHost destroy warning:", e);
-            }
-            const guestPeer = new Peer(peerOptions);
-            setIsHost(false);
-            peerRef.current = guestPeer; // Update reference for cleanup
-            setupPeerHandlers(guestPeer);
-          }, 0);
-        } else {
-          console.warn("PeerJS Error:", err);
-        }
-      });
+        const slotPeerId = `pure-meet-${roomId}-${index}`;
+        const tentativePeer = new Peer(slotPeerId, peerOptions);
+        peerRef.current = tentativePeer;
 
-      currentPeer = tryHost;
+        tentativePeer.on('open', (id) => {
+          if (cancelled) {
+            tentativePeer.destroy();
+            return;
+          }
+          setSlotIndex(index);
+          setIsHost(index === 0);
+          setIsReady(true);
+          setupPeerHandlers(tentativePeer, index);
+        });
+
+        tentativePeer.on('error', (err) => {
+          if (cancelled) return;
+          if (err.type === 'unavailable-id' || err.type === 'id-taken' || err.type === 'invalid-id' || err.type === 'id-taken-on-server') {
+            console.log(`Slot ${index} is occupied or unavailable. Trying slot ${index + 1}...`);
+            tentativePeer.destroy();
+            trySlot(index + 1);
+          } else {
+            console.warn(`PeerJS error in slot ${index}:`, err);
+            tentativePeer.destroy();
+            trySlot(index + 1);
+          }
+        });
+      };
+
+      trySlot(0);
     };
 
     initMediaAndPeer();
@@ -498,8 +551,9 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       // close all connections
       mediaConnections.current.forEach(c => c.close());
       dataConnections.current.forEach(c => c.close());
+      outboundCalls.current.clear();
     };
-  }, [roomId, userName, connectToPeer, setupDataConnection]);
+  }, [roomId]);
 
   useEffect(() => {
     if (recognitionRef.current && isReady) {
@@ -555,6 +609,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       if (audioTrack) {
         audioTrack.enabled = !audioTrack.enabled;
         setIsMuted(!audioTrack.enabled);
+        broadcastData('media-state', { isVideoOff: isVideoOff, isMuted: !audioTrack.enabled });
       }
     }
   };
@@ -569,7 +624,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
           if (newTrack) {
             streamRef.current.addTrack(newTrack);
             videoTrack = newTrack;
-            if (userVideo.current) {
+            if (userVideo.current && userVideo.current.srcObject !== streamRef.current) {
               userVideo.current.srcObject = streamRef.current;
             }
             mediaConnections.current.forEach(call => {
@@ -593,6 +648,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       if (videoTrack) {
         videoTrack.enabled = !videoTrack.enabled;
         setIsVideoOff(!videoTrack.enabled);
+        broadcastData('media-state', { isVideoOff: !videoTrack.enabled, isMuted: isMuted });
       }
     }
   };
@@ -611,7 +667,9 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         });
 
         screenTrack.onended = () => stopScreenShare();
-        if (userVideo.current) userVideo.current.srcObject = screenStream;
+        if (userVideo.current && userVideo.current.srcObject !== screenStream) {
+          userVideo.current.srcObject = screenStream;
+        }
         setIsScreenSharing(true);
       } catch (err) {
         if (err.name === 'NotAllowedError' || err.message?.includes('current context')) {
@@ -634,7 +692,9 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
           sender.replaceTrack(videoTrack).catch(console.error);
         }
       });
-      if (userVideo.current) userVideo.current.srcObject = streamRef.current;
+      if (userVideo.current && userVideo.current.srcObject !== streamRef.current) {
+        userVideo.current.srcObject = streamRef.current;
+      }
     }
     setIsScreenSharing(false);
   };
@@ -931,28 +991,19 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     setTimeout(() => setReactions(prev => prev.filter(r => r.id !== reactionId)), 3000);
   };
 
-  const sendChatMessage = (e) => {
-    e.preventDefault();
-    if (!chatInput.trim() || !peerRef.current) return;
+  const sendChatMessage = (text) => {
+    if (!text || !text.trim() || !peerRef.current) return;
     
     const payload = {
       id: Math.random().toString(36),
       sender: peerRef.current.id,
       senderName: userName,
-      message: chatInput.trim(),
+      message: text.trim(),
       timestamp: Date.now()
     };
     
     setMessages(prev => [...prev, { ...payload, isSelf: true }]);
     broadcastData('chat', payload);
-    setChatInput('');
-    
-    // Scroll to bottom after sending
-    setTimeout(() => {
-      if (chatScrollRef.current) {
-        chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
-      }
-    }, 50);
   };
 
   const handleFileUpload = (e) => {
@@ -1118,7 +1169,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
                   autoPlay 
                   muted 
                   playsInline 
-                  className={`w-full h-full object-cover ${isVideoOff ? 'hidden' : ''} ${isScreenSharing ? '' : '-scale-x-100'}`} 
+                  className={`w-full h-full object-cover ${isVideoOff ? 'hidden' : ''}`} 
                 />
                 {isVideoOff && (
                   <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#09090C] overflow-hidden">
@@ -1183,19 +1234,26 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
                 key={peer.id} 
                 stream={peer.stream} 
                 peerID={peer.id} 
+                displayName={peerNames[peer.id]}
                 isHandRaised={raisedHands.has(peer.id)}
                 peerReactions={reactions.filter(r => r.userId === peer.id)}
                 isHostPOV={isHost}
+                isVideoOff={peerVideoOff[peer.id]}
+                isMuted={peerMuted[peer.id]}
                 onKick={() => {
                   if (window.confirm("Kick this user from the meeting?")) {
-                    // Because we are host, we can close their data and media connections to kick them
                     const dc = dataConnections.current.get(peer.id);
-                    const mc = mediaConnections.current.get(peer.id);
-                    if (dc) dc.close();
-                    if (mc) mc.close();
-                    dataConnections.current.delete(peer.id);
-                    mediaConnections.current.delete(peer.id);
-                    setPeers(prev => prev.filter(p => p.id !== peer.id));
+                    if (dc && dc.open) {
+                      dc.send({ type: 'force-kick' });
+                    }
+                    setTimeout(() => {
+                      const mc = mediaConnections.current.get(peer.id);
+                      if (dc) dc.close();
+                      if (mc) mc.close();
+                      dataConnections.current.delete(peer.id);
+                      mediaConnections.current.delete(peer.id);
+                      setPeers(prev => prev.filter(p => p.id !== peer.id));
+                    }, 100);
                   }
                 }}
               />
@@ -1226,8 +1284,6 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
             <InteractivePanel
               onClose={() => setShowChat(false)}
               messages={messages}
-              chatInput={chatInput}
-              setChatInput={setChatInput}
               sendChatMessage={sendChatMessage}
               fileInputRef={fileInputRef}
               handleFileUpload={handleFileUpload}
@@ -1344,38 +1400,77 @@ const PeerVideo = ({
   isHandRaised, 
   peerReactions,
   isHostPOV,
-  onKick
+  onKick,
+  displayName,
+  isVideoOff,
+  isMuted
 }) => {
   const ref = useRef(null);
   const squircle = "rounded-[24px]";
   const minorSquircle = "rounded-[20px]";
-  const [hasVideo, setHasVideo] = useState(stream.getVideoTracks().filter(t => t.enabled).length > 0);
+  const [trackHasVideo, setTrackHasVideo] = useState(stream ? stream.getVideoTracks().filter(t => t.enabled).length > 0 : false);
+
+  const dispName = displayName || (peerID.endsWith('-0') ? 'Host' : `Participant ${peerID.substring(peerID.length - 2)}`);
+
+  const hasVideo = isVideoOff !== undefined ? !isVideoOff : trackHasVideo;
 
   useEffect(() => {
-    if (ref.current && hasVideo) {
+    if (ref.current && ref.current.srcObject !== stream) {
       ref.current.srcObject = stream;
-      ref.current.play().catch(e => console.error("Play error:", e));
     }
-  }, [stream, hasVideo]);
+    if (ref.current) {
+      ref.current.play().catch(e => {
+        console.warn("Initial playback failed or blocked by autoplay policy. Waiting for gesture to resume:", e);
+      });
+    }
+  }, [stream]);
+
+  // Handle gesture recovery to resume blocked playback instantly when the user clicks/touches anywhere
+  useEffect(() => {
+    const handleUserGesture = () => {
+      if (ref.current && ref.current.paused) {
+        ref.current.play().catch(() => {});
+      }
+    };
+    window.addEventListener('click', handleUserGesture);
+    window.addEventListener('touchstart', handleUserGesture);
+    return () => {
+      window.removeEventListener('click', handleUserGesture);
+      window.removeEventListener('touchstart', handleUserGesture);
+    };
+  }, []);
 
   useEffect(() => {
     const handleTrackChange = () => {
-      setHasVideo(stream.getVideoTracks().filter(t => t.enabled).length > 0);
+      if (stream) {
+        setTrackHasVideo(stream.getVideoTracks().filter(t => t.enabled).length > 0);
+      }
     };
 
-    stream.getVideoTracks().forEach(track => {
-      track.addEventListener('mute', handleTrackChange);
-      track.addEventListener('unmute', handleTrackChange);
-    });
+    if (stream) {
+      stream.addEventListener('addtrack', handleTrackChange);
+      stream.addEventListener('removetrack', handleTrackChange);
 
-    const iv = setInterval(handleTrackChange, 1200);
+      stream.getVideoTracks().forEach(track => {
+        track.addEventListener('mute', handleTrackChange);
+        track.addEventListener('unmute', handleTrackChange);
+        track.addEventListener('ended', handleTrackChange);
+      });
+    }
+
+    const iv = setInterval(handleTrackChange, 1000);
 
     return () => {
       clearInterval(iv);
-      stream.getVideoTracks().forEach(track => {
-        track.removeEventListener('mute', handleTrackChange);
-        track.removeEventListener('unmute', handleTrackChange);
-      });
+      if (stream) {
+        stream.removeEventListener('addtrack', handleTrackChange);
+        stream.removeEventListener('removetrack', handleTrackChange);
+        stream.getVideoTracks().forEach(track => {
+          track.removeEventListener('mute', handleTrackChange);
+          track.removeEventListener('unmute', handleTrackChange);
+          track.removeEventListener('ended', handleTrackChange);
+        });
+      }
     };
   }, [stream]);
 
@@ -1386,18 +1481,18 @@ const PeerVideo = ({
       className="relative min-h-[160px] group transition-all"
       data-participant-card="true"
       data-peer-id={peerID}
-      data-name={peerID.includes('pure-meet-room-') ? `Host ${peerID.substring(peerID.length - 5)}` : `Participant ${peerID.substring(peerID.length - 5)}`}
+      data-name={dispName}
       data-video-off={!hasVideo}
     >
       <div className={`absolute inset-0 bg-[#1E1E1E] ${squircle} overflow-hidden border border-[#2A2A2A] flex items-center justify-center shadow-sm`}>
-        {hasVideo ? (
-          <video 
-            ref={ref} 
-            autoPlay 
-            playsInline 
-            className="w-full h-full object-cover" 
-          />
-        ) : (
+        <video 
+          ref={ref} 
+          autoPlay 
+          playsInline 
+          className={`w-full h-full object-cover ${!hasVideo ? 'hidden' : ''}`} 
+        />
+        
+        {!hasVideo && (
           <div className="absolute inset-0 flex flex-col items-center justify-center bg-[#09090C] overflow-hidden">
             {/* Atmospheric luxury ambient glow */}
             <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(20,184,166,0.08)_0%,rgba(59,130,246,0.03)_50%,transparent_100%)] z-0 pointer-events-none" />
@@ -1408,7 +1503,7 @@ const PeerVideo = ({
             {/* Center glassmorphic squircle avatar casing */}
             <div className="relative w-24 h-24 rounded-[32px] bg-gradient-to-b from-[#1E1E24]/85 to-[#121216]/95 border border-white/10 flex items-center justify-center shadow-2xl z-10 select-none hover:scale-105 transition-all duration-500">
               <span className="text-3xl font-black bg-clip-text text-transparent bg-gradient-to-br from-teal-400 via-sky-300 to-blue-200 drop-shadow-[0_2px_12px_rgba(20,184,166,0.25)] tracking-wide">
-                {peerID.includes('pure-meet-room-') ? `H` : `P`}{peerID.substring(peerID.length - 2).toUpperCase()}
+                {dispName ? dispName.trim().split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase() : 'P'}
               </span>
             </div>
             
@@ -1421,8 +1516,9 @@ const PeerVideo = ({
         )}
 
         <div className={`absolute bottom-4 left-4 bg-black/60 backdrop-blur-xl px-3 py-1.5 flex items-center ${minorSquircle} text-white text-xs font-medium border border-white/10 shadow-lg z-10`}>
-          {peerID.includes('pure-meet-room-') ? <Shield className="w-3.5 h-3.5 text-amber-500 mr-1.5" /> : null}
-          Participant {peerID.substring(peerID.length - 5)}
+          {peerID.endsWith('-0') ? <Shield className="w-3.5 h-3.5 text-amber-500 mr-1.5" /> : null}
+          <span className="truncate max-w-[120px]">{dispName}</span>
+          {isMuted ? <MicOff className="w-3.5 h-3.5 text-red-500 ml-2 animate-pulse" /> : <AudioVisualizer stream={stream} />}
         </div>
       </div>
 
@@ -1439,23 +1535,17 @@ const PeerVideo = ({
         )}
       </AnimatePresence>
 
-      <AnimatePresence>
         {isHostPOV && (
-          <motion.div 
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className={`absolute top-4 right-4 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity z-10`}
-          >
+          <div className="absolute top-4 right-4 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10">
             <button
                onClick={onKick}
-               className={`w-9 h-9 bg-red-600/90 hover:bg-red-600 ${minorSquircle} flex items-center justify-center text-white shadow-xl backdrop-blur-md`}
+               className="w-9 h-9 bg-red-600 hover:bg-red-500 rounded-full flex items-center justify-center text-white shadow-xl"
                title="Kick User"
             >
               <UserX className="w-4 h-4" />
             </button>
-          </motion.div>
+          </div>
         )}
-      </AnimatePresence>
 
       <div className="absolute inset-x-0 bottom-10 top-0 pointer-events-none overflow-visible z-20">
         <AnimatePresence>

@@ -11,8 +11,6 @@ import { playSynthSound } from '../utils/audioSynth';
 export default function InteractivePanel({
   onClose,
   messages,
-  chatInput,
-  setChatInput,
   sendChatMessage,
   fileInputRef,
   handleFileUpload,
@@ -25,6 +23,14 @@ export default function InteractivePanel({
 }) {
   const [activeTab, setActiveTab] = useState('chat');
   const chatScrollRef = useRef(null);
+  const [localInput, setLocalInput] = useState('');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!localInput.trim()) return;
+    sendChatMessage(localInput);
+    setLocalInput('');
+  };
 
   // Poll controller states
   const [showPollCreator, setShowPollCreator] = useState(false);
@@ -46,11 +52,7 @@ export default function InteractivePanel({
 
   useEffect(() => {
     if (activeTab === 'chat' && chatScrollRef.current) {
-      requestAnimationFrame(() => {
-        if (chatScrollRef.current) {
-          chatScrollRef.current.scrollTop = chatScrollRef.current.scrollHeight;
-        }
-      });
+      chatScrollRef.current.scrollIntoView({ behavior: 'auto' });
     }
   }, [messages, activeTab]);
 
@@ -475,7 +477,7 @@ export default function InteractivePanel({
               
               {/* Message Composer Footer Input */}
               <div className="p-4.5 bg-[#141414]/90 border-t border-white/10">
-                <form onSubmit={sendChatMessage} className="flex items-center gap-2 sm:gap-3 relative">
+                <form onSubmit={handleSubmit} className="flex items-center gap-2 sm:gap-3 relative">
                   <input type="file" className="hidden" ref={fileInputRef} onChange={handleFileUpload} />
                   <button 
                     type="button" 
@@ -487,21 +489,21 @@ export default function InteractivePanel({
                   </button>
                   <button 
                     type="button"
-                    onClick={() => setChatInput(chatInput + '👋')}
+                    onClick={() => setLocalInput(prev => prev + '👋')}
                     className={`p-3 text-slate-400 hover:text-emerald-400 hover:bg-emerald-400/10 rounded-[18px] transition-all active:scale-95`}
                   >
                     <Smile className="w-5.5 h-5.5" />
                   </button>
                   <input 
                     type="text" 
-                    value={chatInput}
-                    onChange={(e) => setChatInput(e.target.value)}
+                    value={localInput}
+                    onChange={(e) => setLocalInput(e.target.value)}
                     placeholder="Message everyone..." 
                     className={`flex-1 bg-[#0A0A0A] border border-white/10 rounded-[20px] px-4 py-3 text-sm sm:text-base text-white placeholder:text-slate-500 focus:outline-none focus:border-emerald-500/50 focus:bg-[#111] transition-all min-w-0 font-medium`}
                   />
                   <button 
                     type="submit" 
-                    disabled={!chatInput.trim()}
+                    disabled={!localInput.trim()}
                     className={`p-3 bg-emerald-500 text-black shadow-[0_0_20px_rgba(16,185,129,0.3)] hover:shadow-[0_0_30px_rgba(16,185,129,0.5)] rounded-[20px] disabled:opacity-50 disabled:shadow-none transition-all active:scale-95`}
                   >
                     <Send className="w-5 h-5" />

@@ -6,9 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview",
-    "lint": "echo 'No linting configured'",
-    "predeploy": "npm run build"
+    "preview": "vite preview"
   },
   "dependencies": {
     "@google/genai": "^2.4.0",
