@@ -123,15 +123,19 @@ window.joinComponent = {
         `;
         
         this.element = container;
+        // Append to DOM first so elements can be found
+        document.getElementById('app').appendChild(container);
         this.attachEventListeners();
+        // Remove from DOM temporarily (will be shown by app controller)
+        container.style.display = 'none';
         return container;
     },
     
     attachEventListeners: function() {
-        const userNameInput = document.getElementById('userNameInput');
-        const roomIdInput = document.getElementById('roomIdInput');
-        const btnCreateRoom = document.getElementById('btnCreateRoom');
-        const btnJoinRoom = document.getElementById('btnJoinRoom');
+        const userNameInput = this.element.querySelector('#userNameInput');
+        const roomIdInput = this.element.querySelector('#roomIdInput');
+        const btnCreateRoom = this.element.querySelector('#btnCreateRoom');
+        const btnJoinRoom = this.element.querySelector('#btnJoinRoom');
         
         // Validate inputs
         const validateInputs = () => {
@@ -190,7 +194,7 @@ window.joinComponent = {
             
             elements.forEach(({ id, delay }) => {
                 setTimeout(() => {
-                    const el = document.getElementById(id);
+                    const el = this.element.querySelector('#' + id);
                     if (el) el.classList.add('animate');
                 }, delay);
             });

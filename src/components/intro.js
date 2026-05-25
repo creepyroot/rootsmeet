@@ -23,15 +23,17 @@ window.introComponent = {
         `;
         
         this.element = container;
+        // Append to DOM immediately
+        document.getElementById('app').appendChild(container);
         return container;
     },
     
     animate: function() {
         return new Promise((resolve) => {
-            const lineTop = document.getElementById('introLineTop');
-            const lineBottom = document.getElementById('introLineBottom');
-            const title = document.getElementById('introTitle');
-            const presents = document.getElementById('introPresents');
+            const lineTop = this.element.querySelector('#introLineTop');
+            const lineBottom = this.element.querySelector('#introLineBottom');
+            const title = this.element.querySelector('#introTitle');
+            const presents = this.element.querySelector('#introPresents');
             
             // Animate lines
             setTimeout(() => {

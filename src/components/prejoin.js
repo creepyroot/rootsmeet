@@ -96,22 +96,25 @@ window.preJoinComponent = {
         `;
         
         this.element = container;
+        // Append to DOM immediately
+        document.getElementById('app').appendChild(container);
+        container.style.display = 'none';
         return container;
     },
     
     initialize: async function() {
-        const localVideo = document.getElementById('localVideo');
-        const avatarPlaceholder = document.getElementById('avatarPlaceholder');
-        const avatarCircle = document.getElementById('avatarCircle');
-        const avatarInitials = document.getElementById('avatarInitials');
-        const avatarNameDisplay = document.getElementById('avatarNameDisplay');
-        const toggleMic = document.getElementById('toggleMic');
-        const toggleCamera = document.getElementById('toggleCamera');
-        const micStatus = document.getElementById('micStatus');
-        const cameraStatus = document.getElementById('cameraStatus');
-        const btnJoinNow = document.getElementById('btnJoinNow');
-        const btnBack = document.getElementById('btnBack');
-        const copyRoomBtn = document.getElementById('copyRoomBtn');
+        const localVideo = this.element.querySelector('#localVideo');
+        const avatarPlaceholder = this.element.querySelector('#avatarPlaceholder');
+        const avatarCircle = this.element.querySelector('#avatarCircle');
+        const avatarInitials = this.element.querySelector('#avatarInitials');
+        const avatarNameDisplay = this.element.querySelector('#avatarNameDisplay');
+        const toggleMic = this.element.querySelector('#toggleMic');
+        const toggleCamera = this.element.querySelector('#toggleCamera');
+        const micStatus = this.element.querySelector('#micStatus');
+        const cameraStatus = this.element.querySelector('#cameraStatus');
+        const btnJoinNow = this.element.querySelector('#btnJoinNow');
+        const btnBack = this.element.querySelector('#btnBack');
+        const copyRoomBtn = this.element.querySelector('#copyRoomBtn');
         
         // Set avatar info
         avatarInitials.textContent = helpers.getInitials(state.userName);

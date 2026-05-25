@@ -4,7 +4,7 @@ window.app = {
     currentScreen: null,
     
     init: function() {
-        window.appContainer = document.getElementById('app');
+        this.appContainer = document.getElementById('app');
         
         // Start with intro screen
         this.showIntro();
@@ -13,7 +13,7 @@ window.app = {
     showIntro: async function() {
         // Create and show intro screen
         const introEl = introComponent.create();
-        appContainer.appendChild(introEl);
+        // introComponent already appends to DOM
         
         // Animate intro
         await introComponent.animate();
@@ -24,12 +24,16 @@ window.app = {
     },
     
     showJoinScreen: async function() {
-        // Clear container
-        appContainer.innerHTML = '';
+        // Clear container (but keep existing elements that might be there)
+        while (this.appContainer.firstChild) {
+            this.appContainer.removeChild(this.appContainer.firstChild);
+        }
         
-        // Create and show join screen
+        // Create and show join screen (already appends itself)
         const joinEl = joinComponent.create();
-        appContainer.appendChild(joinEl);
+        
+        // Show the join screen
+        joinEl.style.display = 'flex';
         
         // Animate join screen
         await joinComponent.animate();
@@ -39,16 +43,18 @@ window.app = {
     
     showPreJoinScreen: async function() {
         // Clear container
-        appContainer.innerHTML = '';
+        while (this.appContainer.firstChild) {
+            this.appContainer.removeChild(this.appContainer.firstChild);
+        }
         
-        // Create and show pre-join screen
+        // Create and show pre-join screen (already appends itself)
         const preJoinEl = preJoinComponent.create();
-        appContainer.appendChild(preJoinEl);
         
         // Initialize pre-join (get media, setup controls)
         await preJoinComponent.initialize();
         
-        // Animate
+        // Show and animate
+        preJoinEl.style.display = 'flex';
         await preJoinComponent.animate();
         
         this.currentScreen = 'prejoin';
@@ -56,11 +62,15 @@ window.app = {
     
     showRoomScreen: async function() {
         // Clear container
-        appContainer.innerHTML = '';
+        while (this.appContainer.firstChild) {
+            this.appContainer.removeChild(this.appContainer.firstChild);
+        }
         
-        // Create and show room screen
+        // Create and show room screen (already appends itself)
         const roomEl = roomComponent.create();
-        appContainer.appendChild(roomEl);
+        
+        // Show the room screen
+        roomEl.style.display = 'block';
         
         // Initialize room (setup PeerJS, add local video, etc.)
         roomComponent.initialize();
