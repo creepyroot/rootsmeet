@@ -54,6 +54,35 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
 
   const showChatRef = useRef(showChat);
 
+  const [peerConnectionState, setPeerConnectionState] = useState({});
+  const [isLocalOffline, setIsLocalOffline] = useState(typeof navigator !== 'undefined' ? !navigator.onLine : false);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const handleOnline = () => setIsLocalOffline(false);
+    const handleOffline = () => setIsLocalOffline(true);
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
+
+  const monitorPeerConnection = useCallback((call, peerId) => {
+    const pc = call.peerConnection;
+    if (pc) {
+      console.log("[ICE] Setting up network monitoring for:", peerId);
+      setPeerConnectionState(prev => ({ ...prev, [peerId]: pc.iceConnectionState || 'connected' }));
+      
+      pc.oniceconnectionstatechange = () => {
+        const state = pc.iceConnectionState;
+        console.log(`[ICE] State for ${peerId}: ${state}`);
+        setPeerConnectionState(prev => ({ ...prev, [peerId]: state }));
+      };
+    }
+  }, []);
+
   useEffect(() => {
     showChatRef.current = showChat;
   }, [showChat]);
@@ -169,11 +198,19 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       if (streamRef.current) {
         streamRef.current.getAudioTracks().forEach(t => t.enabled = false);
         setIsMuted(true);
+        const isVideoCurrentlyOff = streamRef.current.getVideoTracks().length > 0
+          ? !streamRef.current.getVideoTracks()[0].enabled
+          : handlersRef.current.isVideoOff;
+        broadcastData('media-state', { isVideoOff: isVideoCurrentlyOff, isMuted: true });
       }
     } else if (data.type === 'force-video-off') {
       if (streamRef.current) {
         streamRef.current.getVideoTracks().forEach(t => t.enabled = false);
         setIsVideoOff(true);
+        const isAudioCurrentlyMuted = streamRef.current.getAudioTracks().length > 0
+          ? !streamRef.current.getAudioTracks()[0].enabled
+          : handlersRef.current.isMuted;
+        broadcastData('media-state', { isVideoOff: true, isMuted: isAudioCurrentlyMuted });
       }
     } else if (data.type === 'force-kick') {
       alert("You have been removed from the meeting by the host.");
@@ -267,6 +304,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
        if (!mediaConnections.current.has(peerId)) {
           console.log("[Peer] Initiating outbound call to:", peerId);
           const call = peerRef.current.call(peerId, stream);
+           monitorPeerConnection(call, peerId);
           mediaConnections.current.set(peerId, call);
           
           call.on('stream', (userVideoStream) => {
@@ -282,6 +320,11 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
           call.on('close', () => {
             mediaConnections.current.delete(peerId);
             outboundCalls.current.delete(peerId);
+             setPeerConnectionState(prev => {
+                const copy = { ...prev };
+                delete copy[peerId];
+                return copy;
+             });
             setPeers(prev => prev.filter(p => p.id !== peerId));
           });
 
@@ -561,7 +604,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         });
       }
 
-      setIsVideoOff(!initialVideoEnabled || dummyVideoAttached);
+      setIsVideoOff(!initialVideoEnabled);
       setIsMuted(!initialAudioEnabled);
 
       if (cancelled) {
@@ -595,6 +638,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
             return;
           }
           mediaConnections.current.set(call.peer, call);
+          monitorPeerConnection(call, call.peer);
           call.answer(streamRef.current || undefined);
           call.on('stream', (userVideoStream) => {
             console.log("[Peer] Received stream on inbound call from:", call.peer);
@@ -607,6 +651,11 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
           });
           call.on('close', () => {
              mediaConnections.current.delete(call.peer);
+             setPeerConnectionState(prev => {
+                const copy = { ...prev };
+                delete copy[call.peer];
+                return copy;
+             });
              setPeers(prev => prev.filter(peer => peer.id !== call.peer));
           });
         });
@@ -1418,6 +1467,20 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         </div>
       </header>
 
+      <AnimatePresence>
+        {isLocalOffline && (
+          <motion.div
+            initial={{ height: 0, opacity: 0 }}
+            animate={{ height: 'auto', opacity: 1 }}
+            exit={{ height: 0, opacity: 0 }}
+            className="bg-amber-500 text-black px-6 py-2.5 flex items-center justify-center gap-2.5 font-bold text-xs tracking-wider uppercase shadow-md z-30 overflow-hidden shrink-0 border-b border-amber-600/30 select-none"
+          >
+            <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse shadow-[0_0_8px_rgba(220,38,38,0.8)]" />
+            <span>Connection Issue Detected. Your internet is offline — pure-meet is trying to reconnect...</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <div className="flex-1 flex overflow-hidden relative">
         <main className={`flex-1 p-3 md:p-6 flex items-center justify-center overflow-hidden transition-all duration-500 ease-in-out`}>
           <div 
@@ -1508,6 +1571,19 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
                 isHostPOV={isHost}
                 isVideoOff={peerVideoOff[peer.id]}
                 isMuted={peerMuted[peer.id]}
+                connectionState={peerConnectionState[peer.id]}
+                onMute={() => {
+                  const dc = dataConnections.current.get(peer.id);
+                  if (dc && dc.open) {
+                    dc.send({ type: 'force-mute' });
+                  }
+                }}
+                onStopVideo={() => {
+                  const dc = dataConnections.current.get(peer.id);
+                  if (dc && dc.open) {
+                    dc.send({ type: 'force-video-off' });
+                  }
+                }}
                 onKick={() => {
                   if (window.confirm("Kick this user from the meeting?")) {
                     const dc = dataConnections.current.get(peer.id);
@@ -1671,7 +1747,10 @@ const PeerVideo = ({
   onKick,
   displayName,
   isVideoOff,
-  isMuted
+  isMuted,
+  connectionState,
+  onMute,
+  onStopVideo
 }) => {
   const ref = useRef(null);
   const squircle = "rounded-[24px]";
@@ -1788,6 +1867,16 @@ const PeerVideo = ({
           <span className="truncate max-w-[120px]">{dispName}</span>
           {isMuted ? <MicOff className="w-3.5 h-3.5 text-red-500 ml-2 animate-pulse" /> : <AudioVisualizer stream={stream} />}
         </div>
+
+        {(connectionState === 'disconnected' || connectionState === 'failed') && (
+          <div className="absolute inset-0 bg-[#09090C]/90 backdrop-blur-md flex flex-col items-center justify-center z-15 text-white p-4 text-center select-none">
+            <div className="w-12 h-12 rounded-full bg-red-500/10 border border-red-500/20 flex items-center justify-center mb-3 animate-pulse">
+              <span className="w-4 h-4 rounded-full bg-red-500 animate-pulse shadow-[0_0_12px_#ef4444]" />
+            </div>
+            <p className="font-bold text-xs tracking-wider uppercase text-red-400">Connection Lost</p>
+            <p className="text-[11px] text-slate-400 mt-1 max-w-[180px]">Participant is reconnecting...</p>
+          </div>
+        )}
       </div>
 
       <AnimatePresence>
@@ -1804,11 +1893,25 @@ const PeerVideo = ({
       </AnimatePresence>
 
         {isHostPOV && (
-          <div className="absolute top-4 right-4 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10">
+          <div className="absolute top-4 right-4 flex items-center gap-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 z-10">
+            <button
+               onClick={onMute}
+               className="w-9 h-9 bg-[#1E1E24]/90 backdrop-blur-md hover:bg-slate-800 text-slate-300 hover:text-white rounded-full flex items-center justify-center shadow-lg border border-white/5"
+               title="Mute Participant"
+            >
+              <MicOff className="w-4 h-4 text-rose-400" />
+            </button>
+            <button
+               onClick={onStopVideo}
+               className="w-9 h-9 bg-[#1E1E24]/90 backdrop-blur-md hover:bg-slate-800 text-slate-300 hover:text-white rounded-full flex items-center justify-center shadow-lg border border-white/5"
+               title="Stop Participant's Video"
+            >
+              <VideoOff className="w-4 h-4 text-rose-400" />
+            </button>
             <button
                onClick={onKick}
-               className="w-9 h-9 bg-red-600 hover:bg-red-500 rounded-full flex items-center justify-center text-white shadow-xl"
-               title="Kick User"
+               className="w-9 h-9 bg-red-600 hover:bg-red-500 rounded-full flex items-center justify-center text-white shadow-lg border border-white/5"
+               title="Kick Participant"
             >
               <UserX className="w-4 h-4" />
             </button>
