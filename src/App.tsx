@@ -69,6 +69,9 @@ export default function App() {
 
   return (
     <div className="h-full w-full bg-[#0A0A0A] font-sans overflow-hidden">
+      {/* Test debug element to see if things render at all */}
+      <div className="fixed top-0 left-0 text-white z-[1000] p-4 text-xs font-mono">DEBUG: APP MOUNTED</div>
+
       <AnimatePresence>
         {showIntro && (
           <motion.div
