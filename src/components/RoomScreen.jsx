@@ -19,9 +19,14 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   const [isHost, setIsHost] = useState(false);
   const [isReady, setIsReady] = useState(false);
   const [slotIndex, setSlotIndex] = useState(null);
+  const slotIndexRef = useRef(null);
   const [peerNames, setPeerNames] = useState({});
   const [peerVideoOff, setPeerVideoOff] = useState({});
   const [peerMuted, setPeerMuted] = useState({});
+  
+  const [knockStatus, setKnockStatus] = useState('approved');
+  const [knockRequests, setKnockRequests] = useState([]);
+  const approvedPeersRef = useRef(new Set());
   
   const [isMuted, setIsMuted] = useState(initialMedia ? !initialMedia.mic : false);
   const [isVideoOff, setIsVideoOff] = useState(initialMedia ? !initialMedia.video : false);
@@ -58,6 +63,8 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     handleDataMessage: null,
     setupDataConnection: null,
     connectToPeer: null,
+    connectHostForKnocking: null,
+    onApprovedJoin: null,
     isHost: false,
     userName: 'Guest',
     roomId: '',
@@ -74,7 +81,13 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
 
   // Handle incoming data messages
   const handleDataMessage = useCallback((senderId, data) => {
-    if (data.type === 'identity') {
+    if (data.type === 'knock-request') {
+      console.log("[Host] Received knock request from:", senderId, data.payload.userName);
+      setKnockRequests(prev => {
+        if (prev.find(req => req.peerId === senderId)) return prev;
+        return [...prev, { peerId: senderId, userName: data.payload.userName }];
+      });
+    } else if (data.type === 'identity') {
       setPeerNames(prev => ({ ...prev, [senderId]: data.payload.userName }));
       if (data.payload.isVideoOff !== undefined) {
         setPeerVideoOff(prev => ({ ...prev, [senderId]: data.payload.isVideoOff }));
@@ -209,7 +222,8 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   };
 
   const setupDataConnection = useCallback((conn) => {
-    conn.on('open', () => {
+    const sendIdentity = () => {
+      console.log("[Data] Sending identity to:", conn.peer);
       conn.send({
         type: 'identity',
         payload: { 
@@ -218,18 +232,22 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
           isMuted: handlersRef.current.isMuted
         }
       });
-      
-      // reciprocal call on data connection opening:
-      if (streamRef.current && !outboundCalls.current.has(conn.peer)) {
-        console.log("[Peer] Reciprocating outbound call on data open to:", conn.peer);
-        handlersRef.current.connectToPeer?.(conn.peer, streamRef.current);
-      }
-    });
+    };
+
+    if (conn.open) {
+      sendIdentity();
+    } else {
+      conn.on('open', sendIdentity);
+    }
+
     conn.on('data', (data) => {
       handlersRef.current.handleDataMessage?.(conn.peer, data);
     });
     conn.on('close', () => {
       dataConnections.current.delete(conn.peer);
+    });
+    conn.on('error', (err) => {
+      console.warn("Data stream connection error with:", conn.peer, err);
     });
   }, []);
 
@@ -266,7 +284,103 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
             outboundCalls.current.delete(peerId);
             setPeers(prev => prev.filter(p => p.id !== peerId));
           });
+
+          call.on('error', (err) => {
+            console.warn("[Peer] Outbound call error with:", peerId, err);
+          });
        }
+    }
+  }, []);
+
+  const connectHostForKnocking = useCallback((hostPeerId) => {
+    if (!peerRef.current) return;
+    console.log("[Knock] Establishing data line to Host for knocking:", hostPeerId);
+    
+    if (!dataConnections.current.has(hostPeerId)) {
+      const dataConn = peerRef.current.connect(hostPeerId);
+      dataConnections.current.set(hostPeerId, dataConn);
+      
+      dataConn.on('open', () => {
+        console.log("[Knock] Connected to host data line. Sending knock-request.");
+        dataConn.send({
+          type: 'knock-request',
+          payload: {
+            userName: handlersRef.current.userName,
+            peerId: peerRef.current.id
+          }
+        });
+      });
+
+      dataConn.on('data', (data) => {
+        if (data.type === 'knock-approved') {
+          console.log("[Knock] Host approved request!");
+          setKnockStatus('approved');
+          // Cleanly wire up standard data channels
+          dataConn.off('data');
+          handlersRef.current.setupDataConnection?.(dataConn);
+          handlersRef.current.onApprovedJoin?.();
+        } else if (data.type === 'knock-declined') {
+          console.log("[Knock] Host declined request.");
+          setKnockStatus('declined');
+          dataConn.close();
+        } else {
+          handlersRef.current.handleDataMessage?.(dataConn.peer, data);
+        }
+      });
+
+      dataConn.on('close', () => {
+        dataConnections.current.delete(hostPeerId);
+      });
+      
+      dataConn.on('error', (err) => {
+        console.warn("[Knock] Host data connection error:", err);
+      });
+    }
+  }, []);
+
+  const onApprovedJoin = useCallback(() => {
+    const myIndex = slotIndexRef.current;
+    if (!peerRef.current || myIndex === null) {
+      console.log("[Peer] Approved join but slot index is still null.");
+      return;
+    }
+    console.log("[Peer] Approved! Connecting to all existing slots. myIndex:", myIndex);
+    
+    // Connect to all slots lower than slotIndex
+    for (let i = 0; i < myIndex; i++) {
+      const targetSlotId = `pure-meet-${roomId}-${i}`;
+      handlersRef.current.connectToPeer?.(targetSlotId, streamRef.current);
+    }
+  }, [roomId]);
+
+  const handleKnockResponse = useCallback((peerId, isApproved) => {
+    setKnockRequests(prev => prev.filter(req => req.peerId !== peerId));
+    
+    const dataConn = dataConnections.current.get(peerId);
+    if (isApproved) {
+      console.log("[Host] Approving request from:", peerId);
+      approvedPeersRef.current.add(peerId);
+      if (dataConn && dataConn.open) {
+        dataConn.send({ type: 'knock-approved' });
+        // Host immediately transmits identity payload to the guest
+        dataConn.send({
+          type: 'identity',
+          payload: {
+            userName: handlersRef.current.userName,
+            isVideoOff: handlersRef.current.isVideoOff,
+            isMuted: handlersRef.current.isMuted
+          }
+        });
+      }
+    } else {
+      console.log("[Host] Declining request from:", peerId);
+      if (dataConn && dataConn.open) {
+        dataConn.send({ type: 'knock-declined' });
+      }
+      setTimeout(() => {
+        if (dataConn) dataConn.close();
+        dataConnections.current.delete(peerId);
+      }, 300);
     }
   }, []);
 
@@ -274,6 +388,8 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
   handlersRef.current.handleDataMessage = handleDataMessage;
   handlersRef.current.setupDataConnection = setupDataConnection;
   handlersRef.current.connectToPeer = connectToPeer;
+  handlersRef.current.connectHostForKnocking = connectHostForKnocking;
+  handlersRef.current.onApprovedJoin = onApprovedJoin;
 
   useEffect(() => {
     if (userVideo.current && localStream) {
@@ -390,6 +506,48 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         return;
       }
 
+      let dummyVideoAttached = false;
+      // Add dummy fallback video track if completely missing
+      if (stream.getVideoTracks().length === 0) {
+        console.log("[Stream] Appending dummy video track as fallback");
+        try {
+          const canvas = document.createElement('canvas');
+          canvas.width = 640;
+          canvas.height = 480;
+          const ctx = canvas.getContext('2d');
+          if (ctx) {
+            ctx.fillStyle = '#111111';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+          }
+          const dummySecStream = canvas.captureStream(5);
+          const dummyVideoTrack = dummySecStream.getVideoTracks()[0];
+          dummyVideoTrack.enabled = false; // keep it paused/disabled
+          stream.addTrack(dummyVideoTrack);
+          dummyVideoAttached = true;
+        } catch (e) {
+          console.warn("Failed to append dummy fallback video:", e);
+        }
+      }
+
+      // Add dummy fallback audio track if completely missing
+      if (stream.getAudioTracks().length === 0) {
+        console.log("[Stream] Appending dummy audio track as fallback");
+        try {
+          const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+          if (AudioContextClass) {
+            const ctx = new AudioContextClass();
+            const oscillator = ctx.createOscillator();
+            const dst = ctx.createMediaStreamDestination();
+            oscillator.connect(dst);
+            const dummyAudioTrack = dst.stream.getAudioTracks()[0];
+            dummyAudioTrack.enabled = false; // keep it disabled
+            stream.addTrack(dummyAudioTrack);
+          }
+        } catch (e) {
+          console.warn("Failed to append dummy fallback audio:", e);
+        }
+      }
+
       // Apply initial state to tracks immediately to avoid WebRTC stream renegotiations later!
       const initialVideoEnabled = initialMedia?.video !== false;
       const initialAudioEnabled = initialMedia?.mic !== false;
@@ -403,7 +561,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         });
       }
 
-      setIsVideoOff(!initialVideoEnabled);
+      setIsVideoOff(!initialVideoEnabled || dummyVideoAttached);
       setIsMuted(!initialAudioEnabled);
 
       if (cancelled) {
@@ -416,10 +574,13 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
       setIsReady(true);
 
       const setupPeerHandlers = (p, myIndex) => {
-        // Higher-index slots connect to lower-index slots
-        for (let i = 0; i < myIndex; i++) {
-          const targetSlotId = `pure-meet-${roomId}-${i}`;
-          handlersRef.current.connectToPeer?.(targetSlotId, stream);
+        // Host (myIndex 0) enters as approved by default. Other participants start as pending!
+        if (myIndex === 0) {
+          setKnockStatus('approved');
+        } else {
+          setKnockStatus('pending');
+          const hostPeerId = `pure-meet-${roomId}-0`;
+          handlersRef.current.connectHostForKnocking?.(hostPeerId);
         }
 
         p.on('connection', (conn) => {
@@ -428,6 +589,11 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
         });
 
         p.on('call', (call) => {
+          // If we are Host, only answer if we have approved them!
+          if (handlersRef.current.isHost && !approvedPeersRef.current.has(call.peer)) {
+            console.log("[Peer] Host ignoring call from unapproved peer:", call.peer);
+            return;
+          }
           mediaConnections.current.set(call.peer, call);
           call.answer(streamRef.current || undefined);
           call.on('stream', (userVideoStream) => {
@@ -443,12 +609,6 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
              mediaConnections.current.delete(call.peer);
              setPeers(prev => prev.filter(peer => peer.id !== call.peer));
           });
-
-          // reciprocal outbound call if not already dialing outbound:
-          if (streamRef.current && !outboundCalls.current.has(call.peer)) {
-            console.log("[Peer] Reciprocating outbound call on inbound call from:", call.peer);
-            handlersRef.current.connectToPeer?.(call.peer, streamRef.current);
-          }
         });
         
         p.on('disconnected', () => {
@@ -493,6 +653,7 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
             return;
           }
           setSlotIndex(index);
+          slotIndexRef.current = index;
           setIsHost(index === 0);
           setIsReady(true);
           setupPeerHandlers(tentativePeer, index);
@@ -1093,8 +1254,115 @@ export default function RoomScreen({ roomId, userName = 'Guest', onLeave, initia
     </div>
   }
 
+  if (slotIndex > 0 && knockStatus === 'pending') {
+    return (
+      <div className="h-full w-full bg-[#111111] flex items-center justify-center text-white relative overflow-hidden flex-col">
+        {/* Beautiful cosmic gradient behind */}
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(16,185,129,0.06)_0%,transparent_70%)] pointer-events-none" />
+        
+        <div className="bg-[#1A1A22] rounded-[32px] p-8 border border-white/5 max-w-md w-full mx-4 shadow-2xl flex flex-col items-center text-center relative z-10">
+          <div className="relative mb-6">
+            <div className="absolute inset-0 rounded-full bg-emerald-500/10 blur-xl animate-pulse" />
+            <div className="w-20 h-20 rounded-[28px] bg-emerald-500/10 border-2 border-emerald-500/30 flex items-center justify-center">
+              <Shield className="w-8 h-8 text-emerald-400 animate-bounce" />
+            </div>
+          </div>
+          
+          <h3 className="text-xl font-bold tracking-tight mb-2">Asking to join...</h3>
+          <p className="text-slate-400 text-sm max-w-sm mb-6 leading-relaxed">
+            We've sent a request to the host. You'll enter the call as soon as your request is approved.
+          </p>
+          
+          <div className="flex items-center gap-2 bg-slate-800/50 px-4 py-2 rounded-full border border-white/5 text-xs text-slate-300">
+            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
+            <span>Waiting for host approval</span>
+          </div>
+
+          <button 
+            id="btn-cancel-knock"
+            onClick={onLeave} 
+            className="mt-8 text-xs text-slate-500 hover:text-slate-300 underline underline-offset-4 tracking-wide font-medium"
+          >
+            Cancel request and leave
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  if (slotIndex > 0 && knockStatus === 'declined') {
+    return (
+      <div className="h-full w-full bg-[#111111] flex items-center justify-center text-white relative overflow-hidden flex-col">
+        <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(239,68,68,0.04)_0%,transparent_70%)] pointer-events-none" />
+        
+        <div className="bg-[#1A1A22] rounded-[32px] p-8 border border-red-500/20 max-w-md w-full mx-4 shadow-2xl flex flex-col items-center text-center relative z-10">
+          <div className="relative mb-6">
+            <div className="absolute inset-0 rounded-full bg-red-500/10 blur-xl" />
+            <div className="w-20 h-20 rounded-[28px] bg-red-500/10 border-2 border-red-500/30 flex items-center justify-center">
+              <ShieldOff className="w-8 h-8 text-red-400" />
+            </div>
+          </div>
+          
+          <h3 className="text-xl font-bold tracking-tight mb-2">Request Declined</h3>
+          <p className="text-slate-400 text-sm max-w-sm mb-6 leading-relaxed">
+            Your request to join this meeting was declined by the host.
+          </p>
+          
+          <button 
+            id="btn-back-declined"
+            onClick={onLeave} 
+            className="px-6 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded-xl border border-white/5 transition-colors"
+          >
+            Back to Home
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-full w-full bg-[#111111] flex flex-col font-sans relative overflow-hidden">
+      {/* Elegantly styled sliding modal for Host Joins Approval */}
+      <AnimatePresence>
+        {isHost && knockRequests.length > 0 && (
+          <motion.div 
+            initial={{ opacity: 0, y: -50, scale: 0.95 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            exit={{ opacity: 0, y: -50, scale: 0.95 }}
+            className="absolute top-20 left-1/2 -translate-x-1/2 bg-[#1C1C24]/95 border border-emerald-500/30 text-white rounded-[24px] shadow-[0_20px_50px_rgba(0,0,0,0.5)] max-w-sm w-full p-5 z-[200] backdrop-blur-xl"
+            id="knock-request-panel"
+          >
+            <div className="flex items-center gap-4">
+              <div className="w-11 h-11 rounded-[16px] bg-emerald-500/10 border border-emerald-500/20 flex items-center justify-center text-emerald-400 font-bold text-lg shadow-inner">
+                {knockRequests[0].userName.charAt(0).toUpperCase()}
+              </div>
+              <div className="flex-1 min-w-0">
+                <span className="text-[10px] font-black tracking-widest text-emerald-400 uppercase">Join Request</span>
+                <p className="font-bold text-[15px] text-slate-100 truncate mt-0.5">{knockRequests[0].userName}</p>
+                <p className="text-xs text-slate-400 truncate">wants to join this room</p>
+              </div>
+            </div>
+            
+            <div className="flex gap-3 mt-5">
+              <button
+                id="btn-decline-knock"
+                onClick={() => handleKnockResponse(knockRequests[0].peerId, false)}
+                className="flex-1 py-2 px-4 bg-red-500/10 hover:bg-red-500/20 text-red-400 font-semibold border border-red-500/10 rounded-xl text-xs transition-colors hover:scale-[1.02] active:scale-[0.98]"
+              >
+                Deny
+              </button>
+              <button
+                id="btn-accept-knock"
+                onClick={() => handleKnockResponse(knockRequests[0].peerId, true)}
+                className="flex-1 py-2 px-4 bg-emerald-500 hover:bg-emerald-400 text-white font-bold rounded-xl text-xs transition-all shadow-[0_4px_12px_rgba(16,185,129,0.3)] hover:scale-[1.02] active:scale-[0.98] flex items-center justify-center gap-1.5"
+              >
+                Admit
+              </button>
+            </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
       <header className="h-16 flex items-center justify-between px-6 bg-[#1A1A1A] text-white shrink-0 shadow-sm z-20 sticky top-0 border-b border-black/20">
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
