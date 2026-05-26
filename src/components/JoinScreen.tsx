@@ -6,6 +6,7 @@ export default function JoinScreen({ onJoin, onCreate, forcedRoomId }) {
   const [roomId, setRoomId] = useState(forcedRoomId || '');
   const [userName, setUserName] = useState('');
   const [hovered, setHovered] = useState(null);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     if (forcedRoomId) setRoomId(forcedRoomId);
@@ -13,12 +14,16 @@ export default function JoinScreen({ onJoin, onCreate, forcedRoomId }) {
 
   const handleJoin = (e) => {
     e.preventDefault();
+    if (!userName.trim()) {
+      setError("Please enter a name first.");
+      return;
+    }
     if (roomId.trim() && userName.trim()) onJoin(roomId.trim(), userName.trim());
   };
 
   const handleCreate = () => {
     if (userName.trim()) onCreate(userName.trim());
-    else alert("Please enter a name first.");
+    else setError("Please enter a name first.");
   };
 
   const squircle = "rounded-[24px]";
@@ -93,6 +98,13 @@ export default function JoinScreen({ onJoin, onCreate, forcedRoomId }) {
               <h2 className="text-2xl font-semibold text-white mb-8 tracking-tight">
                 {forcedRoomId ? "Join Meeting" : "Get Started"}
               </h2>
+
+              {error && (
+                <div className="mb-6 p-4 bg-red-500/10 border border-red-500/20 rounded-2xl text-red-400 text-sm font-medium flex items-center gap-3">
+                  <span className="w-2 h-2 rounded-full bg-red-400 shadow-[0_0_8px_#f87171]" />
+                  {error}
+                </div>
+              )}
 
               <form onSubmit={forcedRoomId ? handleJoin : undefined} className="space-y-6 relative z-10">
                 <div className="space-y-1.5">

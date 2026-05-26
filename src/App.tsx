@@ -28,7 +28,7 @@ export default function App() {
       window.history.replaceState({}, '', url.toString());
     }
 
-    const timer = setTimeout(() => setShowIntro(false), 3800);
+    const timer = setTimeout(() => setShowIntro(false), 2800);
     return () => clearTimeout(timer);
   }, []);
 
@@ -76,7 +76,7 @@ export default function App() {
             initial={{ opacity: 1 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0, scale: 1.1, filter: "blur(10px)" }}
-            transition={{ duration: 0.8, ease: "easeInOut" }}
+            transition={{ duration: 1.0, ease: "easeInOut" }}
             className="fixed inset-0 z-50 flex items-center justify-center bg-[#070707]"
           >
             <div className="absolute inset-0 overflow-hidden pointer-events-none">
@@ -98,7 +98,7 @@ export default function App() {
                 <motion.h1
                   initial={{ y: "100%" }}
                   animate={{ y: 0 }}
-                  transition={{ duration: 1, ease: [0.16, 1, 0.3, 1], delay: 0.5 }}
+                  transition={{ duration: 1.2, ease: [0.16, 1, 0.3, 1], delay: 0.4 }}
                   className="text-5xl md:text-8xl font-black tracking-tighter text-transparent bg-clip-text bg-gradient-to-r from-emerald-400 via-teal-300 to-emerald-600 uppercase"
                 >
                   GURNOOR PROJECTS
@@ -107,13 +107,13 @@ export default function App() {
               <motion.div
                 initial={{ width: 0 }}
                 animate={{ width: '100%' }}
-                transition={{ duration: 0.8, ease: "circOut", delay: 1.2 }}
+                transition={{ duration: 0.8, ease: "circOut", delay: 1.0 }}
                 className="h-[2px] bg-emerald-500 mt-8"
               />
               <motion.p
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
-                transition={{ duration: 0.8, delay: 1.8 }}
+                transition={{ duration: 0.8, delay: 1.5 }}
                 className="mt-6 text-slate-400 font-medium tracking-widest uppercase text-sm"
               >
                 Presents
@@ -125,7 +125,7 @@ export default function App() {
 
       <motion.div
         animate={{ opacity: showIntro ? 0 : 1, scale: showIntro ? 0.95 : 1 }}
-        transition={{ duration: 0.8, delay: 3.2 }}
+        transition={{ duration: 0.8, delay: showIntro ? 0 : 0.2 }}
         className="h-full w-full"
       >
         {roomId ? (

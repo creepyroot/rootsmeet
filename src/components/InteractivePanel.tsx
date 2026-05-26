@@ -6,7 +6,7 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { playSynthSound } from '../utils/audioSynth';
 
-
+let globalWhiteboardStrokes = [];
 
 export default function InteractivePanel({
   onClose,
@@ -95,6 +95,9 @@ export default function InteractivePanel({
         ctx.lineWidth = 3;
         if (currentWidth > 0 && currentHeight > 0) {
           ctx.drawImage(tempCanvas, 0, 0, currentWidth, currentHeight, 0, 0, targetWidth, targetHeight);
+        } else {
+          // Re-hydrate the whiteboard state for late joiners or tab switches
+          globalWhiteboardStrokes.forEach(data => drawExternalSegment(data));
         }
       }
     };
@@ -211,8 +214,7 @@ export default function InteractivePanel({
     const width = canvas.width;
     const height = canvas.height;
     
-    // Broadcast draw event to peers with both absolute and normalized coordinates
-    broadcastData('canvas_draw', {
+    const strokeData = {
       x,
       y,
       lastX: lastPos.current.x,
@@ -222,7 +224,11 @@ export default function InteractivePanel({
       rlastX: width > 0 ? lastPos.current.x / width : 0,
       rlastY: width > 0 ? lastPos.current.y / height : 0,
       color: drawColor
-    });
+    };
+    
+    globalWhiteboardStrokes.push(strokeData);
+    // Broadcast draw event to peers with both absolute and normalized coordinates
+    broadcastData('canvas_draw', strokeData);
     
     lastPos.current = { x, y };
   };
@@ -258,6 +264,7 @@ export default function InteractivePanel({
   // Listen to incoming whiteboard sync events
   useEffect(() => {
     const handleDrawMessage = (e) => {
+      globalWhiteboardStrokes.push(e.detail);
       if (activeTab === 'draw') {
         drawExternalSegment(e.detail);
       }
@@ -277,12 +284,14 @@ export default function InteractivePanel({
   };
 
   const triggerClearCanvas = () => {
+    globalWhiteboardStrokes = [];
     clearCanvasLocal();
     broadcastData('canvas_clear', {});
   };
 
   useEffect(() => {
     const handleClearMessage = () => {
+      globalWhiteboardStrokes = [];
       clearCanvasLocal();
     };
     window.addEventListener('peer-canvas-clear', handleClearMessage);

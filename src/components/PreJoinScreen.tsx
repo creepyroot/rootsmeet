@@ -19,7 +19,11 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }) {
     const initPreview = async () => {
       if (typeof navigator === 'undefined' || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
         console.warn("MediaDevices API not available.");
-        setError('Secure origin (HTTPS) or supported browser required for media.');
+        if (window.location.protocol === 'http:' && window.location.hostname !== 'localhost') {
+           setError('Microphone & Camera require a secure HTTPS connection. You can still join in Listen-Only mode.');
+        } else {
+           setError('Secure origin (HTTPS) or supported browser required for media. You can still join in Listen-Only mode.');
+        }
         setMicEnabled(false);
         setVideoEnabled(false);
         setStream(new MediaStream());
@@ -28,8 +32,9 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }) {
 
       const getMediaStream = async () => {
         const videoConstraint = { 
-          width: { ideal: 1280 }, 
-          height: { ideal: 720 },
+          width: { ideal: 640 }, 
+          height: { ideal: 360 },
+          frameRate: { ideal: 24, max: 30 },
           facingMode: "user"
         };
         
@@ -168,7 +173,9 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }) {
         const tracks = stream.getVideoTracks();
         if (tracks.length === 0) {
           try {
-            const tempStream = await navigator.mediaDevices.getUserMedia({ video: true });
+            const tempStream = await navigator.mediaDevices.getUserMedia({ 
+              video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 24, max: 30 } } 
+            });
             const newTrack = tempStream.getVideoTracks()[0];
             if (newTrack) {
               stream.addTrack(newTrack);
@@ -260,8 +267,8 @@ export default function PreJoinScreen({ roomId, userName, onJoin, onCancel }) {
                 <span>{error ? "Standby Mode" : "Camera Paused"}</span>
               </p>
               {error && (
-                <p className="mt-2 text-[10px] text-slate-500 max-w-[80%] text-center uppercase tracking-widest leading-relaxed z-10 px-2 truncate">
-                  Mic & video restricted or unavailable
+                <p className="mt-4 text-xs text-red-400 font-medium bg-red-400/10 px-3 py-2 rounded-lg text-center max-w-[85%] border border-red-500/20 z-10 break-words leading-relaxed">
+                  {error}
                 </p>
               )}
             </div>
